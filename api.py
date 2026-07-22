@@ -24,6 +24,7 @@ from odoo_universal import (
     register_tenant,
     get_tenant,
 )
+from core.state_store import buscar_mapeo, init_db
 
 # ---------------------------------------------------------------------------
 # Configuracion inicial
@@ -57,6 +58,18 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Base de datos de control (state store). Crea las tablas si no existen.
+init_db()
+logger.info("Base de datos de control inicializada.")
+
+# Routers de negocio (facturas, pagos). Endpoints con estado e idempotencia.
+from routers import conciliacion, facturas, inventario, pagos  # noqa: E402  (import tras crear la app)
+
+app.include_router(facturas.router)
+app.include_router(pagos.router)
+app.include_router(conciliacion.router)
+app.include_router(inventario.router)
 
 # ---------------------------------------------------------------------------
 # Variables de entorno
@@ -152,6 +165,35 @@ def health_check():
         "odoo_conectado": odoo_ok,
         "modelos_permitidos": sorted(ALLOWED_MODELS) if ALLOWED_MODELS else "todos",
         "metodos_permitidos": sorted(ALLOWED_METHODS) if ALLOWED_METHODS else "todos",
+    }
+
+
+@app.get(
+    "/estado/{entidad}/{id_origen}",
+    tags=["Sistema"],
+    dependencies=[Depends(verify_api_key)],
+)
+def estado_sincronizacion(entidad: str, id_origen: str):
+    """
+    Consulta el estado de sincronizacion de un registro de origen en la base de
+    datos de control (state store). Util para seguimiento e idempotencia.
+
+    Devuelve 404 si el registro nunca se ha intentado sincronizar.
+    """
+    mapa = buscar_mapeo(entidad, id_origen)
+    if mapa is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sin registro de sincronizacion para {entidad}/{id_origen}.",
+        )
+    return {
+        "entidad": mapa.entidad,
+        "id_origen": mapa.id_origen,
+        "model_odoo": mapa.model_odoo,
+        "id_odoo": mapa.id_odoo,
+        "estado": mapa.estado,
+        "error": mapa.error,
+        "actualizado": mapa.actualizado.isoformat() if mapa.actualizado else None,
     }
 
 

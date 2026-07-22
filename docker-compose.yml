@@ -1,0 +1,38 @@
+# Orquestacion del middleware API-Odoo con cola de tareas (Fase 5).
+#
+#   web    -> API FastAPI (uvicorn) en el puerto 8000
+#   worker -> worker Celery que procesa las tareas en background
+#   redis  -> broker y backend de resultados de Celery
+#
+# Uso:
+#   docker compose up --build
+#
+# Las credenciales de Odoo y la API_KEY se toman de .env (env_file).
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  web:
+    build: .
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      - redis
+    command: celery -A core.celery_app.celery_app worker --loglevel=info

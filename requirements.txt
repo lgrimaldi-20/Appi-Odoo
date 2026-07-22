@@ -4,6 +4,10 @@ requests
 pydantic
 python-dotenv
 slowapi
+sqlalchemy
+pyyaml
+celery
+redis
 httpx
 pytest
 pytest-asyncio

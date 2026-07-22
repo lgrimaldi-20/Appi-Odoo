@@ -1,0 +1,57 @@
+# -----------------------------------------------------------------------------
+# Configuracion declarativa de MAPEO (Data Mapper - Fase 2)
+#
+# Traduce los registros de la base de datos de ORIGEN al esquema de Odoo.
+# Editable sin tocar codigo Python.
+#
+# Estructura por entidad:
+#   <entidad>:
+#     model: <modelo Odoo destino>            # p.ej. account.move
+#     id_origen: <campo del registro origen que identifica el registro>
+#     defaults: {campo_odoo: valor}           # valores fijos (p.ej. move_type)
+#     campos:   {campo_origen: campo_odoo}    # renombrado directo 1:1
+#     resolver:                               # claves foraneas: busca el id en Odoo
+#       <campo_odoo>:
+#         desde: <campo_origen>               # valor a buscar (tomado del registro)
+#         model: <modelo Odoo donde buscar>   # p.ej. res.partner
+#         buscar_por: <campo Odoo>            # campo por el que se filtra (p.ej. vat)
+#         obligatorio: true|false             # si true y no se encuentra -> error
+# -----------------------------------------------------------------------------
+
+factura:
+  model: account.move
+  id_origen: factura_id
+  # Si se define, tras postear se valida que amount_total en Odoo coincida
+  # al centimo con este campo del registro de origen (control de impuestos).
+  validar_total: total
+  defaults:
+    move_type: out_invoice          # factura de cliente
+  campos:
+    fecha: invoice_date
+    referencia: ref
+  resolver:
+    partner_id:
+      desde: cliente_nif
+      model: res.partner
+      buscar_por: vat
+      obligatorio: true
+
+pago:
+  model: account.payment
+  id_origen: pago_id
+  defaults:
+    payment_type: inbound           # ingreso (cobro de cliente)
+  campos:
+    monto: amount
+    fecha: date
+  resolver:
+    partner_id:
+      desde: cliente_nif
+      model: res.partner
+      buscar_por: vat
+      obligatorio: true
+    journal_id:
+      desde: diario_codigo
+      model: account.journal
+      buscar_por: code
+      obligatorio: true

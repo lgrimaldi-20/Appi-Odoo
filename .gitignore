@@ -11,6 +11,10 @@ __pycache__/
 .env.*
 !.env.example
 
+# Base de datos de control local (SQLite)
+*.db
+control.db
+
 # Artefactos de test
 .pytest_cache/
 htmlcov/
@@ -26,3 +30,6 @@ coverage.xml
 dist/
 build/
 *.egg-info/
+
+# Clon git separado (repositorio distinto, no forma parte de este proyecto)
+API-Odoo Helpdesk Sestia/

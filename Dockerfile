@@ -8,6 +8,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY api.py odoo_universal.py ./
+COPY core ./core
+COPY routers ./routers
 
 ENV PORT=8000
 
