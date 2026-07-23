@@ -55,7 +55,7 @@ def _resolver_producto(odoo: OdooUniversalAPI, registro: dict) -> int:
     encontrados = odoo.execute(
         "product.product",
         "search_read",
-        [[["default_code", "=", referencia]]],
+        [["default_code", "=", referencia]],
         fields=["id"],
         limit=1,
     )
@@ -79,7 +79,7 @@ def _resolver_ubicacion(odoo: OdooUniversalAPI, registro: dict) -> int:
         encontradas = odoo.execute(
             "stock.location",
             "search_read",
-            [[["complete_name", "=", nombre], ["usage", "=", "internal"]]],
+            [["complete_name", "=", nombre], ["usage", "=", "internal"]],
             fields=["id"],
             limit=1,
         )
@@ -91,7 +91,7 @@ def _resolver_ubicacion(odoo: OdooUniversalAPI, registro: dict) -> int:
     internas = odoo.execute(
         "stock.location",
         "search_read",
-        [[["usage", "=", "internal"]]],
+        [["usage", "=", "internal"]],
         fields=["id"],
         limit=1,
     )
@@ -108,7 +108,7 @@ def _cantidad_actual(odoo: OdooUniversalAPI, producto_id: int, ubicacion_id: int
     quants = odoo.execute(
         "stock.quant",
         "search_read",
-        [[["product_id", "=", producto_id], ["location_id", "=", ubicacion_id]]],
+        [["product_id", "=", producto_id], ["location_id", "=", ubicacion_id]],
         fields=["id", "quantity"],
         limit=1,
     )

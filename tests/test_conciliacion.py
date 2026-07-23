@@ -39,7 +39,7 @@ def _odoo_con_lineas():
         if model == "account.payment" and method == "read":
             return [{"move_id": [90, "PAGO/1"]}]
         if model == "account.move.line" and method == "search_read":
-            move_id = args[0][0][0][2]  # filtro ["move_id","=",X]
+            move_id = args[0][0][2]  # dominio=args[0], 1a condicion ["move_id","=",X]
             return [{"id": 1000 + move_id, "account_id": [5, "Clientes"], "balance": 100.0}]
         if model == "account.move.line" and method == "reconcile":
             return True

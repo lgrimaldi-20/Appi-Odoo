@@ -29,6 +29,9 @@ factura:
   campos:
     fecha: invoice_date
     referencia: ref
+    # Lineas de factura: el origen las envia ya en formato de comando Odoo
+    # (p.ej. [(0, 0, {"product_id": X, "quantity": N, "price_unit": P})]).
+    lineas: invoice_line_ids
   resolver:
     partner_id:
       desde: cliente_nif

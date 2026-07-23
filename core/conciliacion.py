@@ -38,16 +38,15 @@ def _lineas_conciliables(odoo: OdooUniversalAPI, move_id: int) -> list[dict]:
     Devuelve las account.move.line de un asiento (factura o pago) que estan en
     una cuenta por cobrar/pagar y aun no estan conciliadas.
     """
+    dominio = [
+        ["move_id", "=", move_id],
+        ["account_id.account_type", "in", list(TIPOS_CONCILIABLES)],
+        ["reconciled", "=", False],
+    ]
     lineas = odoo.execute(
         "account.move.line",
         "search_read",
-        [
-            [
-                ["move_id", "=", move_id],
-                ["account_id.account_type", "in", list(TIPOS_CONCILIABLES)],
-                ["reconciled", "=", False],
-            ]
-        ],
+        dominio,
         fields=["id", "account_id", "balance"],
     )
     return lineas or []
