@@ -25,8 +25,11 @@ from fastapi.testclient import TestClient
 import routers.conciliacion as r_conciliacion
 import routers.facturas as r_facturas
 import routers.pagos as r_pagos
+import routers.poller as r_poller
 from core.conciliacion import ConciliacionError
+from core.poller import ResultadoLote
 from core.sincronizador import ResultadoSync, SincronizacionError
+from odoo_universal import OdooConnectionError
 
 client = TestClient(app)
 
@@ -134,3 +137,36 @@ class TestConciliacion:
 
         r = client.post("/conciliar", json={"factura_id_odoo": 10, "pago_id_odoo": 20})
         assert r.status_code == 422
+
+
+# --- /poller/ejecutar ---
+
+
+class TestPoller:
+    def test_pasada_manual_devuelve_resumen(self, monkeypatch):
+        monkeypatch.setattr(r_poller, "polling_habilitado", lambda: True)
+        monkeypatch.setattr(
+            r_poller, "procesar_lote",
+            lambda tenant, limite: ResultadoLote(leidas=3, procesadas=2, con_error=1),
+        )
+
+        r = client.post("/poller/ejecutar", json={})
+        assert r.status_code == 200
+        data = r.json()
+        assert data == {"leidas": 3, "procesadas": 2, "con_error": 1}
+
+    def test_sin_source_db_devuelve_400(self, monkeypatch):
+        monkeypatch.setattr(r_poller, "polling_habilitado", lambda: False)
+
+        r = client.post("/poller/ejecutar", json={})
+        assert r.status_code == 400
+
+    def test_odoo_caido_devuelve_503(self, monkeypatch):
+        monkeypatch.setattr(r_poller, "polling_habilitado", lambda: True)
+
+        def cae(tenant, limite):
+            raise OdooConnectionError("Odoo caido")
+        monkeypatch.setattr(r_poller, "procesar_lote", cae)
+
+        r = client.post("/poller/ejecutar", json={})
+        assert r.status_code == 503

@@ -136,7 +136,9 @@ def marcar_estado(
         if mapa is None:
             raise KeyError(f"No existe mapeo para {entidad}/{id_origen}")
         mapa.estado = estado.value
-        mapa.error = error if estado == EstadoSync.ERROR else None
+        # Se conserva el mensaje para estados que llevan detalle (ERROR, ELIMINADO);
+        # en el resto se limpia.
+        mapa.error = error if estado in (EstadoSync.ERROR, EstadoSync.ELIMINADO) else None
 
 
 def ya_procesado(entidad: str, id_origen: str) -> Optional[int]:

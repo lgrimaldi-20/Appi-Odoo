@@ -36,6 +36,26 @@ celery_app.conf.update(
     task_acks_late=True,            # re-encola si el worker muere a mitad
 )
 
+# ---------------------------------------------------------------------------
+# Celery Beat: poller periodico (modo pull desde la DB del cliente).
+#
+# Solo se programa si hay SOURCE_DATABASE_URL (modo polling activo); si no, no
+# se registra ninguna tarea periodica. El intervalo (segundos) es configurable
+# con POLLER_INTERVALO_SEG (por defecto 30). Requiere arrancar Celery Beat:
+#   celery -A core.celery_app.celery_app beat --loglevel=info
+# ---------------------------------------------------------------------------
+if os.getenv("SOURCE_DATABASE_URL"):
+    _POLLER_INTERVALO = float(os.getenv("POLLER_INTERVALO_SEG", "30"))
+    _POLLER_TENANT = os.getenv("POLLER_TENANT", "default")
+    _POLLER_LIMITE = int(os.getenv("POLLER_LIMITE", "50"))
+    celery_app.conf.beat_schedule = {
+        "poller-cola-cliente": {
+            "task": "core.tasks.poller_task",
+            "schedule": _POLLER_INTERVALO,
+            "kwargs": {"tenant": _POLLER_TENANT, "limite": _POLLER_LIMITE},
+        }
+    }
+
 
 def en_modo_eager() -> bool:
     """True si Celery corre inline (sin broker). Util para la respuesta HTTP."""

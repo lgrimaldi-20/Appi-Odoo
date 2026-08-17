@@ -21,6 +21,7 @@ from core.conciliacion import ConciliacionError, conciliar
 from core.facturacion import crear_factura
 from core.inventario import ajustar_stock
 from core.pagos import crear_pago
+from core.poller import procesar_lote
 from core.rollback import cancelar_factura
 from core.sincronizador import SincronizacionError
 from odoo_universal import OdooConnectionError, get_tenant
@@ -74,6 +75,26 @@ def ajustar_stock_task(self, registro: dict, tenant: str = "default") -> dict:
     """Aplica un ajuste de existencias en background. Idempotente por ajuste_id."""
     odoo = get_tenant(tenant)
     return ajustar_stock(registro, odoo)
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(OdooConnectionError,),
+    retry_backoff=_BACKOFF_BASE,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=_REINTENTOS_MAX,
+)
+def poller_task(self, tenant: str = "default", limite: int = 50) -> dict:
+    """
+    Pasada del poller (modo pull): lee la cola de la DB del cliente y sincroniza
+    hacia Odoo. Ejecutada periodicamente por Celery Beat (ver celery_app).
+
+    Reintenta el lote completo si Odoo esta caido (OdooConnectionError); los
+    fallos de datos por fila no abortan la pasada (quedan ERROR en la cola).
+    """
+    resultado = procesar_lote(tenant=tenant, limite=limite)
+    return asdict(resultado)
 
 
 @celery_app.task(bind=True)

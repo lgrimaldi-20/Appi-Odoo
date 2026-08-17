@@ -34,6 +34,7 @@ class EstadoSync(str, Enum):
     PROCESANDO = "PROCESANDO"
     PROCESADO = "PROCESADO"
     ERROR = "ERROR"
+    ELIMINADO = "ELIMINADO"   # el registro fue borrado en Odoo (p.ej. asiento)
 
 
 def _ahora() -> datetime:
