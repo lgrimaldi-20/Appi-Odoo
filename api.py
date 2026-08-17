@@ -64,12 +64,18 @@ init_db()
 logger.info("Base de datos de control inicializada.")
 
 # Routers de negocio (facturas, pagos). Endpoints con estado e idempotencia.
-from routers import conciliacion, facturas, inventario, pagos  # noqa: E402  (import tras crear la app)
+# panel: dashboard de observabilidad (lectura de sync_map/sync_log).
+# asientos: crear/eliminar asientos contables (account.move tipo 'entry').
+from routers import asientos, conciliacion, facturas, inventario, pagos, panel, poller  # noqa: E402  (import tras crear la app)
 
 app.include_router(facturas.router)
 app.include_router(pagos.router)
 app.include_router(conciliacion.router)
 app.include_router(inventario.router)
+app.include_router(asientos.router)
+app.include_router(poller.router)  # /poller/ejecutar (pasada manual, protegido)
+app.include_router(panel.router)   # /panel (HTML)
+app.include_router(panel.datos)    # /panel/api/* (JSON, protegido)
 
 # ---------------------------------------------------------------------------
 # Variables de entorno
@@ -163,6 +169,9 @@ def health_check():
     return {
         "status": status,
         "odoo_conectado": odoo_ok,
+        # Version del servidor Odoo detectada en el arranque. Util para verificar
+        # de un vistazo contra que version se esta hablando (17/18/19).
+        "odoo_version": getattr(_default_odoo, "version", None) if odoo_ok else None,
         "modelos_permitidos": sorted(ALLOWED_MODELS) if ALLOWED_MODELS else "todos",
         "metodos_permitidos": sorted(ALLOWED_METHODS) if ALLOWED_METHODS else "todos",
     }

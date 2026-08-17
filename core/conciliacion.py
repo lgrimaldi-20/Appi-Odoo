@@ -38,9 +38,13 @@ def _lineas_conciliables(odoo: OdooUniversalAPI, move_id: int) -> list[dict]:
     Devuelve las account.move.line de un asiento (factura o pago) que estan en
     una cuenta por cobrar/pagar y aun no estan conciliadas.
     """
+    # parent_state='posted': en Odoo 19 reconcile() rechaza apuntes en borrador,
+    # asi que se filtran aqui para dar un error claro ("verifica que esten
+    # posteados") en vez de que falle el reconcile mas adelante.
     dominio = [
         ["move_id", "=", move_id],
         ["account_id.account_type", "in", list(TIPOS_CONCILIABLES)],
+        ["parent_state", "=", "posted"],
         ["reconciled", "=", False],
     ]
     lineas = odoo.execute(

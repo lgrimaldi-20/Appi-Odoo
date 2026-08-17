@@ -187,6 +187,13 @@ def ajustar_stock(registro: dict, odoo: OdooUniversalAPI) -> dict:
                 )
 
         # Escribe la cantidad contada y aplica el ajuste (genera el movimiento).
+        # inventory_quantity_set=True es OBLIGATORIO desde Odoo 17: marca que el
+        # conteo ha sido introducido. Sin el, action_apply_inventory considera
+        # que no hay cantidad contada y ajustaria contra 0 (o no haria nada).
+        valores_quant = {
+            "inventory_quantity": final,
+            "inventory_quantity_set": True,
+        }
         if quant_id is None:
             quant_id = odoo.execute(
                 "stock.quant",
@@ -194,13 +201,11 @@ def ajustar_stock(registro: dict, odoo: OdooUniversalAPI) -> dict:
                 {
                     "product_id": producto_id,
                     "location_id": ubicacion_id,
-                    "inventory_quantity": final,
+                    **valores_quant,
                 },
             )
         else:
-            odoo.execute(
-                "stock.quant", "write", [quant_id], {"inventory_quantity": final}
-            )
+            odoo.execute("stock.quant", "write", [quant_id], valores_quant)
 
         odoo.execute("stock.quant", "action_apply_inventory", [quant_id])
 

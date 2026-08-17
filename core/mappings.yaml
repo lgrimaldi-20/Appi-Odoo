@@ -38,12 +38,24 @@ factura:
       model: res.partner
       buscar_por: vat
       obligatorio: true
+    # Moneda del documento (dualidad Bs/USD). Se busca por el nombre ISO de la
+    # moneda (p.ej. "VES" para bolivares, "USD" para dolares). Opcional: si no
+    # se indica moneda_iso, Odoo emite en la moneda de la compania. Odoo calcula
+    # el equivalente en la moneda de la compania con la tasa de cambio vigente.
+    currency_id:
+      desde: moneda_iso
+      model: res.currency
+      buscar_por: name
+      obligatorio: false
 
 pago:
   model: account.payment
   id_origen: pago_id
   defaults:
     payment_type: inbound           # ingreso (cobro de cliente)
+    # Odoo 19 exige partner_type explicito para resolver la cuenta contrapartida
+    # (customer -> cuenta por cobrar). Antes se infería en algunos flujos.
+    partner_type: customer
   campos:
     monto: amount
     fecha: date
@@ -58,3 +70,10 @@ pago:
       model: account.journal
       buscar_por: code
       obligatorio: true
+    # Moneda del pago (dualidad Bs/USD). Debe coincidir con la moneda de la
+    # factura para conciliar sin descuadres por tipo de cambio. Opcional.
+    currency_id:
+      desde: moneda_iso
+      model: res.currency
+      buscar_por: name
+      obligatorio: false

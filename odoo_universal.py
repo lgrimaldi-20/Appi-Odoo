@@ -29,16 +29,50 @@ class OdooUniversalAPI:
         self.username = username
         self.password = password
         self.timeout = timeout
+        # Version del servidor: se consulta antes del login (common.version no
+        # requiere autenticacion) para poder adaptar llamadas por version.
+        self.version_info = self._version()
+        self.version = self.version_info.get("server_serie") or ""
         self.uid = self._login()
 
+    @property
+    def version_mayor(self) -> int:
+        """
+        Numero de version mayor del servidor (19, 18, 17...). Devuelve 0 si no
+        se pudo determinar. Sirve para adaptar llamadas que cambiaron de firma.
+        """
+        try:
+            return int(str(self.version).split(".")[0])
+        except (ValueError, IndexError):
+            return 0
+
+    def _version(self) -> dict:
+        """
+        Consulta common.version (no requiere autenticacion). Un fallo aqui no
+        es fatal: se devuelve {} y se seguira con el login.
+        """
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "call",
+            "params": {"service": "common", "method": "version", "args": []},
+        }
+        try:
+            response = requests.post(self.url, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json().get("result") or {}
+        except (requests.RequestException, ValueError):
+            return {}
+
     def _login(self) -> int:
+        # Odoo 19 elimino el metodo obsoleto common.login: hay que usar
+        # common.authenticate, que exige un cuarto argumento (user agent env).
         payload = {
             "jsonrpc": "2.0",
             "method": "call",
             "params": {
                 "service": "common",
-                "method": "login",
-                "args": [self.db, self.username, self.password],
+                "method": "authenticate",
+                "args": [self.db, self.username, self.password, {}],
             },
         }
         try:
