@@ -63,11 +63,16 @@ Alternativa al modo push (cliente hace `POST /facturas`…). Aquí **el cliente 
 - **Disparo manual:** [routers/poller.py](routers/poller.py) expone `POST /poller/ejecutar` (protegido, síncrono) para forzar una pasada sin esperar al tick de Beat. → 400 si no hay `SOURCE_DATABASE_URL`, 503 si Odoo está caído.
 - **Sembrar la cola en pruebas:** [scripts/sembrar_cola_poller.py](scripts/sembrar_cola_poller.py) crea la tabla y encola filas de ejemplo (no toca Odoo).
 
+### Panel de observabilidad (`core/observabilidad.py` + `routers/panel.py`)
+Dashboard de **solo lectura**, servido por el propio FastAPI. `core/observabilidad.py` es el reverso de `state_store`: `resumen()` (agregados por estado/entidad), `listar_sincronizaciones()`/`listar_logs()` (con filtros), `detalle_registro()` y **`cola_poller()`**, que lee la bandeja de entrada en la DB de ORIGEN del cliente (engine de `poller_source`, no el de control) y devuelve `habilitado=False` si el modo pull está apagado, en vez de fallar.
+`routers/panel.py` expone `GET /panel` (dashboard HTML autocontenido, sin dependencias externas) y los datos en `GET /panel/api/{resumen,sincronizaciones,logs,detalle/...,cola}`. Tres pestañas: **Sincronizaciones**, **Bitácora** y **Cola del poller**; más un botón *Poller ahora* que dispara `POST /poller/ejecutar` y un check de auto-refresco cada 5 s.
+**Seguridad:** los endpoints de datos van protegidos por `verify_api_key`; la página `/panel` es solo el shell HTML y su JS pide la API Key y la envía como `X-Api-Key` en cada `fetch`. El panel refleja la DB de control y la cola del cliente — no consulta Odoo.
+
 ### Routers (`routers/`)
 `/facturas`, `/pagos`, `/conciliar`, `/stock/*` — each protected by the shared **[core/seguridad.py](core/seguridad.py)** (`verify_api_key` reads `API_KEY` from env each call; `resolver_tenant` → 400 on unknown tenant). Extracted to a neutral module so routers don't import `api.py` (avoids a circular import). `/facturas`, `/pagos` and `/stock/ajustar` take an optional `"async": true` field → enqueue and return `{encolado, task_id}` (in eager mode this still runs inline); otherwise synchronous. `api.py` also has `GET /estado/{entidad}/{id_origen}` to read a record's sync state.
 
 ### Endpoints
-`/odoo` (generic, auth) · `/facturas` · `/pagos` · `/conciliar` · `/stock/ajustar` · `/stock/consultar` · `/poller/ejecutar` (pasada manual, auth) · `/estado/{entidad}/{id_origen}` · `/health` (no auth).
+`/odoo` (generic, auth) · `/facturas` · `/pagos` · `/conciliar` · `/stock/ajustar` · `/stock/consultar` · `/poller/ejecutar` (pasada manual, auth) · `/estado/{entidad}/{id_origen}` · `/panel` (HTML, no auth) · `/panel/api/*` (JSON, auth) · `/health` (no auth).
 
 Note the whitelists (`ALLOWED_MODELS`/`ALLOWED_METHODS`) only gate the generic `/odoo` endpoint — the business routers call Odoo directly through the connector.
 

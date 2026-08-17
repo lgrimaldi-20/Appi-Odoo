@@ -64,13 +64,15 @@ init_db()
 logger.info("Base de datos de control inicializada.")
 
 # Routers de negocio (facturas, pagos). Endpoints con estado e idempotencia.
-from routers import conciliacion, facturas, inventario, pagos, poller  # noqa: E402  (import tras crear la app)
+from routers import conciliacion, facturas, inventario, pagos, panel, poller  # noqa: E402  (import tras crear la app)
 
 app.include_router(facturas.router)
 app.include_router(pagos.router)
 app.include_router(conciliacion.router)
 app.include_router(inventario.router)
 app.include_router(poller.router)  # /poller/ejecutar (pasada manual, protegido)
+app.include_router(panel.router)   # /panel (HTML)
+app.include_router(panel.datos)    # /panel/api/* (JSON, protegido)
 
 # ---------------------------------------------------------------------------
 # Variables de entorno
