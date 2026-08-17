@@ -33,3 +33,7 @@ build/
 
 # Clon git separado (repositorio distinto, no forma parte de este proyecto)
 API-Odoo Helpdesk Sestia/
+API-Odoo-Helpdesk-Sestia/
+
+# Documentos personales ajenos al proyecto
+resume/
