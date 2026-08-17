@@ -38,6 +38,15 @@ factura:
       model: res.partner
       buscar_por: vat
       obligatorio: true
+    # Moneda del documento (dualidad Bs/USD). Se busca por el nombre ISO
+    # (p.ej. "VES" para bolivares, "USD" para dolares). Opcional: sin
+    # moneda_iso, Odoo emite en la moneda de la compania. Odoo calcula el
+    # equivalente en la moneda de la compania con la tasa vigente.
+    currency_id:
+      desde: moneda_iso
+      model: res.currency
+      buscar_por: name
+      obligatorio: false
 
 pago:
   model: account.payment
@@ -53,6 +62,15 @@ pago:
       model: res.partner
       buscar_por: vat
       obligatorio: true
+    # Moneda del documento (dualidad Bs/USD). Se busca por el nombre ISO
+    # (p.ej. "VES" para bolivares, "USD" para dolares). Opcional: sin
+    # moneda_iso, Odoo emite en la moneda de la compania. Odoo calcula el
+    # equivalente en la moneda de la compania con la tasa vigente.
+    currency_id:
+      desde: moneda_iso
+      model: res.currency
+      buscar_por: name
+      obligatorio: false
     journal_id:
       desde: diario_codigo
       model: account.journal
