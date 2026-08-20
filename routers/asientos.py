@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from core.asientos import AsientoError, crear_asiento, eliminar_asiento
 from core.seguridad import resolver_tenant, verify_api_key
+from core.state_store import ReservaOcupada
 from odoo_universal import OdooConnectionError, OdooUniversalAPI
 
 logger = logging.getLogger("api-odoo")
@@ -54,6 +55,10 @@ def crear(req: AsientoRequest):
     odoo: OdooUniversalAPI = resolver_tenant(req.tenant)
     try:
         return crear_asiento(req.registro, odoo)
+    except ReservaOcupada as e:
+        # Otra peticion con el mismo id de origen esta en curso -> 409.
+        logger.info("RESERVA_OCUPADA | %s", e)
+        raise HTTPException(status_code=409, detail=str(e))
     except AsientoError as e:
         logger.warning("ASIENTO_ERROR | %s", e)
         raise HTTPException(status_code=422, detail=str(e))

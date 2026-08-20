@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from core.inventario import InventarioError, ajustar_stock, consultar_stock
 from core.seguridad import resolver_tenant, verify_api_key
+from core.state_store import ReservaOcupada
 from core.tasks import ajustar_stock_task
 from odoo_universal import OdooConnectionError, OdooUniversalAPI
 
@@ -59,6 +60,10 @@ def ajustar(req: AjusteStockRequest):
 
     try:
         return ajustar_stock(req.registro, odoo)
+    except ReservaOcupada as e:
+        # Otra peticion con el mismo id de origen esta en curso -> 409.
+        logger.info("RESERVA_OCUPADA | %s", e)
+        raise HTTPException(status_code=409, detail=str(e))
     except InventarioError as e:
         logger.warning("STOCK_ERROR | %s", e)
         raise HTTPException(status_code=422, detail=str(e))

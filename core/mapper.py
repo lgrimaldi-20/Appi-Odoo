@@ -16,6 +16,7 @@ por lo que el mapper valida de paso que los datos maestros existan en Odoo
 
 import os
 from functools import lru_cache
+import time
 from typing import Any, Optional
 
 import yaml
@@ -24,6 +25,34 @@ from odoo_universal import OdooUniversalAPI
 
 # Ruta al YAML de mapeo (junto a este modulo).
 _MAPPINGS_PATH = os.path.join(os.path.dirname(__file__), "mappings.yaml")
+
+
+# ---------------------------------------------------------------------------
+# Cache de datos maestros
+# ---------------------------------------------------------------------------
+# Resolver una FK cuesta un search_read a Odoo (~200-800 ms). Sincronizar N
+# facturas del mismo cliente repetia N veces la misma busqueda. La cache guarda
+# (tenant, model, campo, valor) -> id durante un TTL corto: los datos maestros
+# (clientes, diarios, monedas) cambian poco, y un TTL bajo evita servir un id
+# obsoleto si el maestro se recrea en Odoo.
+#
+# Se cachean SOLO los aciertos: un fallo puede ser un maestro que el cliente
+# esta a punto de crear, y cachearlo daria errores fantasma.
+_CACHE_TTL_SEG = 300
+_cache_fk: dict[tuple, tuple[float, int]] = {}
+
+
+def _clave_cache(odoo, model: str, campo: str, valor) -> tuple:
+    """Clave de cache. Incluye la identidad del conector: dos tenants apuntan
+    a bases Odoo distintas y NO pueden compartir ids. Se usa clave_tenant
+    (url+db+uid), estable, y no id(), que CPython recicla."""
+    tenant = getattr(odoo, "clave_tenant", None) or id(odoo)
+    return (tenant, model, campo, str(valor))
+
+
+def limpiar_cache_fk() -> None:
+    """Vacia la cache de datos maestros (util en tests y tras recargas)."""
+    _cache_fk.clear()
 
 
 class MapeoError(Exception):
@@ -97,6 +126,15 @@ def _resolver_fk(
             )
         return None
 
+    # Cache: evita repetir el mismo search_read en lotes del mismo cliente.
+    clave = _clave_cache(odoo, model, buscar_por, valor)
+    entrada = _cache_fk.get(clave)
+    if entrada is not None:
+        caducado_en, id_cacheado = entrada
+        if time.monotonic() < caducado_en:
+            return id_cacheado
+        del _cache_fk[clave]
+
     # Busca en Odoo: search_read por el campo indicado, limit=1.
     resultado = odoo.execute(
         model,
@@ -114,7 +152,9 @@ def _resolver_fk(
             )
         return None
 
-    return resultado[0]["id"]
+    id_encontrado = resultado[0]["id"]
+    _cache_fk[clave] = (time.monotonic() + _CACHE_TTL_SEG, id_encontrado)
+    return id_encontrado
 
 
 def mapear(entidad: str, registro: dict, odoo: OdooUniversalAPI) -> dict[str, Any]:

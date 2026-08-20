@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from core.conciliacion import ConciliacionError, conciliar
 from core.seguridad import resolver_tenant, verify_api_key
+from core.state_store import ReservaOcupada
 from odoo_universal import OdooConnectionError, OdooUniversalAPI
 
 logger = logging.getLogger("api-odoo")
@@ -42,6 +43,10 @@ def conciliar_factura_pago(req: ConciliacionRequest):
             factura_id_origen=req.factura_id_origen,
             pago_id_origen=req.pago_id_origen,
         )
+    except ReservaOcupada as e:
+        # Otra peticion con el mismo id de origen esta en curso -> 409.
+        logger.info("RESERVA_OCUPADA | %s", e)
+        raise HTTPException(status_code=409, detail=str(e))
     except ConciliacionError as e:
         logger.warning("CONCILIACION_ERROR | %s", e)
         raise HTTPException(status_code=422, detail=str(e))

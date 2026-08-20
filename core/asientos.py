@@ -21,9 +21,10 @@ Idempotente por el campo de origen "asiento_id".
 """
 
 import logging
+import time
 from decimal import Decimal
 
-from core import state_store
+from core import mapper, state_store
 from core.models_db import EstadoSync
 from odoo_universal import OdooExecutionError, OdooUniversalAPI
 
@@ -67,14 +68,28 @@ def _cache_cuentas(odoo: OdooUniversalAPI, codigos: set[str]) -> dict[str, int]:
     # Un "in" sobre un campo company-dependent no es fiable, asi que se busca
     # cuenta a cuenta con "=" (que Odoo si sabe traducir a la compania activa) y
     # se normaliza el codigo devuelto para casar con el de origen.
+    #
+    # Como cuesta una llamada POR cuenta, se reutiliza la cache de datos
+    # maestros del mapper: un asiento de 50 lineas sobre las mismas cuentas
+    # pasa de 50 llamadas a las estrictamente nuevas.
     mapa: dict[str, int] = {}
     for codigo in codigos:
+        clave = mapper._clave_cache(odoo, "account.account", "code", codigo)
+        entrada = mapper._cache_fk.get(clave)
+        if entrada is not None and time.monotonic() < entrada[0]:
+            mapa[codigo] = entrada[1]
+            continue
+
         encontradas = odoo.execute(
             "account.account", "search_read",
             [["code", "=", codigo]], fields=["id", "code"], limit=1,
         )
         if encontradas:
-            mapa[codigo] = encontradas[0]["id"]
+            id_cuenta = encontradas[0]["id"]
+            mapa[codigo] = id_cuenta
+            mapper._cache_fk[clave] = (
+                time.monotonic() + mapper._CACHE_TTL_SEG, id_cuenta
+            )
     return mapa
 
 
@@ -157,9 +172,13 @@ def crear_asiento(registro: dict, odoo: OdooUniversalAPI) -> dict:
         raise AsientoError("Falta 'asiento_id' (identificador unico del asiento).")
     asiento_id = str(asiento_id)
 
-    # 1. Idempotencia.
-    previo = state_store.buscar_mapeo(ENTIDAD, asiento_id)
-    if previo is not None and previo.estado == EstadoSync.PROCESADO.value:
+    # 1. Idempotencia ATOMICA (reserva antes de tocar Odoo, sin ventana de
+    # carrera entre el "compruebo" y el "creo").
+    previo = state_store.reservar_estricto(
+        ENTIDAD, asiento_id, model_odoo=MODEL,
+        hash_payload=state_store.calcular_hash(registro),
+    )
+    if previo is not None:
         state_store.log(ENTIDAD, "idempotente", "OK", asiento_id, "Asiento ya creado")
         return {
             "asiento_id": asiento_id,
@@ -169,12 +188,6 @@ def crear_asiento(registro: dict, odoo: OdooUniversalAPI) -> dict:
         }
 
     postear = registro.get("postear", True)
-
-    state_store.registrar_mapeo(
-        ENTIDAD, asiento_id, model_odoo=MODEL,
-        estado=EstadoSync.PROCESANDO,
-        hash_payload=state_store.calcular_hash(registro),
-    )
 
     # 2 y 3. Resolver diario/cuentas y validar cuadre (antes de tocar Odoo).
     try:

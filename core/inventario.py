@@ -151,9 +151,15 @@ def ajustar_stock(registro: dict, odoo: OdooUniversalAPI) -> dict:
     if cantidad < 0:
         raise InventarioError("'cantidad' no puede ser negativa; use el campo 'modo'.")
 
-    # Idempotencia: un ajuste ya aplicado no se repite.
-    previo = state_store.buscar_mapeo(ENTIDAD, ajuste_id)
-    if previo is not None and previo.estado == EstadoSync.PROCESADO.value:
+    # Idempotencia ATOMICA: reservar antes de tocar Odoo. Critico aqui — un
+    # ajuste "incrementar" aplicado dos veces corrompe las existencias en
+    # silencio, y la comprobacion previa dejaba una ventana de carrera.
+    previo = state_store.reservar_estricto(
+        ENTIDAD, ajuste_id,
+        model_odoo="stock.quant",
+        hash_payload=state_store.calcular_hash(registro),
+    )
+    if previo is not None:
         state_store.log(ENTIDAD, "idempotente", "OK", ajuste_id, "Ajuste ya aplicado")
         return {
             "ajuste_id": ajuste_id,
@@ -161,13 +167,6 @@ def ajustar_stock(registro: dict, odoo: OdooUniversalAPI) -> dict:
             "idempotente": True,
             "quant_id": previo.id_odoo,
         }
-
-    state_store.registrar_mapeo(
-        ENTIDAD, ajuste_id,
-        model_odoo="stock.quant",
-        estado=EstadoSync.PROCESANDO,
-        hash_payload=state_store.calcular_hash(registro),
-    )
 
     try:
         producto_id = _resolver_producto(odoo, registro)

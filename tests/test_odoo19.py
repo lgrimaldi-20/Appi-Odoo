@@ -40,7 +40,8 @@ class TestAutenticacion:
                 return _respuesta({"server_serie": "19.0"})
             return _respuesta(7)
 
-        with patch("odoo_universal.requests.post", side_effect=fake_post):
+        with patch("requests.Session.post", autospec=True,
+                   side_effect=lambda _self, *a, **k: fake_post(*a, **k)):
             api = OdooUniversalAPI("http://odoo", "db", "user", "pass")
 
         metodos = [p["method"] for p in llamadas]
@@ -62,7 +63,8 @@ class TestAutenticacion:
                 return _respuesta({"server_serie": "19.0"})
             return _respuesta(1)
 
-        with patch("odoo_universal.requests.post", side_effect=fake_post):
+        with patch("requests.Session.post", autospec=True,
+                   side_effect=lambda _self, *a, **k: fake_post(*a, **k)):
             api = OdooUniversalAPI("http://odoo", "db", "user", "pass")
 
         assert api.version == "19.0"
@@ -79,7 +81,8 @@ class TestAutenticacion:
                 raise _requests.RequestException("sin respuesta")
             return _respuesta(1)
 
-        with patch("odoo_universal.requests.post", side_effect=fake_post):
+        with patch("requests.Session.post", autospec=True,
+                   side_effect=lambda _self, *a, **k: fake_post(*a, **k)):
             api = OdooUniversalAPI("http://odoo", "db", "user", "pass")
 
         assert api.version_info == {}

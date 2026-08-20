@@ -62,8 +62,18 @@ def sincronizar_entidad(
     except mapper.MapeoError as e:
         raise SincronizacionError(str(e)) from e
 
-    # 1. IDEMPOTENCIA: si ya se proceso, no repetimos.
-    id_odoo_existente = state_store.ya_procesado(entidad, id_origen)
+    conf = mapper.cargar_config()[entidad]
+    model_odoo = conf["model"]
+    hash_payload = state_store.calcular_hash(registro)
+
+    # 1 y 2. IDEMPOTENCIA + marca PROCESANDO en un solo paso ATOMICO.
+    # No se comprueba "ya procesado" y luego se marca por separado: entre las
+    # dos operaciones cabe otra peticion con el mismo id_origen, y ambas
+    # crearian el registro en Odoo (duplicado contable). reservar() delega el
+    # arbitraje en la UniqueConstraint de sync_map.
+    id_odoo_existente = state_store.reservar(
+        entidad, id_origen, model_odoo=model_odoo, hash_payload=hash_payload,
+    )
     if id_odoo_existente is not None:
         state_store.log(
             entidad, "idempotente", "OK", id_origen,
@@ -75,18 +85,6 @@ def sincronizar_entidad(
             estado=EstadoSync.PROCESADO.value,
             idempotente=True,
         )
-
-    conf = mapper.cargar_config()[entidad]
-    model_odoo = conf["model"]
-    hash_payload = state_store.calcular_hash(registro)
-
-    # 2. Marca PROCESANDO (crea/actualiza el mapeo).
-    state_store.registrar_mapeo(
-        entidad, id_origen,
-        model_odoo=model_odoo,
-        estado=EstadoSync.PROCESANDO,
-        hash_payload=hash_payload,
-    )
 
     # 3. MAPEO (traduce y valida datos maestros).
     try:

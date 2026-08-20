@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from typing import Optional
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from core.models_db import Base, EstadoSync, SyncLog, SyncMap
@@ -27,10 +28,29 @@ from core.models_db import Base, EstadoSync, SyncLog, SyncMap
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./control.db")
 
-# check_same_thread=False solo aplica a SQLite (FastAPI usa varios hilos).
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+_es_sqlite = DATABASE_URL.startswith("sqlite")
 
-engine = create_engine(DATABASE_URL, connect_args=_connect_args, future=True)
+# check_same_thread=False solo aplica a SQLite (FastAPI usa varios hilos).
+_connect_args = {"check_same_thread": False} if _es_sqlite else {}
+
+# SQLite serializa las escrituras con un lock de fichero: bajo concurrencia
+# devuelve "database is locked" en vez de esperar. timeout le dice que espere.
+if _es_sqlite:
+    _connect_args["timeout"] = 15
+
+# Pool solo para bases reales (SQLite usa SingletonThreadPool/NullPool y
+# rechaza estos argumentos). pool_pre_ping descarta conexiones muertas, lo que
+# importa con PostgreSQL gestionado (RDS corta las conexiones ociosas).
+_pool_kwargs = {} if _es_sqlite else {
+    "pool_size": int(os.getenv("DB_POOL_SIZE", "10")),
+    "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
+    "pool_pre_ping": True,
+    "pool_recycle": 1800,
+}
+
+engine = create_engine(
+    DATABASE_URL, connect_args=_connect_args, future=True, **_pool_kwargs
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 
@@ -150,6 +170,138 @@ def ya_procesado(entidad: str, id_origen: str) -> Optional[int]:
     if mapa and mapa.estado == EstadoSync.PROCESADO.value:
         return mapa.id_odoo
     return None
+
+
+class ReservaOcupada(Exception):
+    """
+    Otro proceso ya tiene reservado (entidad, id_origen) y lo esta procesando.
+
+    Se usa para cortar la CARRERA de idempotencia: sin esto, dos peticiones
+    simultaneas con el mismo id_origen leen "no procesado" a la vez y ambas
+    crean el registro en Odoo (duplicado contable real, observado en pruebas).
+    """
+    def __init__(self, entidad: str, id_origen: str, estado: str = ""):
+        self.entidad = entidad
+        self.id_origen = id_origen
+        self.estado = estado
+        super().__init__(
+            f"El registro ({entidad}, {id_origen}) ya esta reservado por otro "
+            f"proceso (estado={estado or 'PROCESANDO'})."
+        )
+
+
+def reservar(
+    entidad: str,
+    id_origen: str,
+    model_odoo: Optional[str] = None,
+    hash_payload: Optional[str] = None,
+) -> Optional[int]:
+    """
+    Reserva ATOMICA de (entidad, id_origen) antes de tocar Odoo.
+
+    Es el candado de la idempotencia: se apoya en la UniqueConstraint
+    (entidad, id_origen) de sync_map, de modo que el arbitro es la base de
+    datos y no una comprobacion previa en Python (que deja una ventana de
+    carrera entre el "compruebo" y el "actuo").
+
+    Devuelve:
+      - el id_odoo, si el registro YA estaba PROCESADO (idempotente, no hay
+        nada que hacer).
+      - None, si la reserva se tomo con exito y hay que procesar.
+
+    Lanza ReservaOcupada si otro proceso lo tiene en PROCESANDO, o si dos
+    inserciones compiten y esta pierde (IntegrityError).
+    """
+    # Camino rapido: ya procesado -> ni siquiera hace falta reservar.
+    ya = ya_procesado(entidad, id_origen)
+    if ya is not None:
+        return ya
+
+    id_origen = str(id_origen)
+    try:
+        with get_session() as session:
+            mapa = (
+                session.query(SyncMap)
+                .filter_by(entidad=entidad, id_origen=id_origen)
+                .one_or_none()
+            )
+            if mapa is None:
+                # INSERT: si otro proceso inserta a la vez, uno de los dos
+                # recibe IntegrityError por la UniqueConstraint. Ese pierde.
+                mapa = SyncMap(
+                    entidad=entidad, id_origen=id_origen,
+                    model_odoo=model_odoo, hash_payload=hash_payload,
+                    estado=EstadoSync.PROCESANDO.value,
+                )
+                session.add(mapa)
+                session.flush()
+                return None
+
+            # Ya existia: solo se puede retomar si NO esta en curso.
+            if mapa.estado == EstadoSync.PROCESADO.value:
+                return mapa.id_odoo
+            if mapa.estado == EstadoSync.PROCESANDO.value:
+                raise ReservaOcupada(entidad, id_origen, mapa.estado)
+
+            # PENDIENTE / ERROR / ELIMINADO -> se puede reintentar.
+            mapa.estado = EstadoSync.PROCESANDO.value
+            if model_odoo is not None:
+                mapa.model_odoo = model_odoo
+            if hash_payload is not None:
+                mapa.hash_payload = hash_payload
+            mapa.error = None
+            return None
+    except IntegrityError as e:
+        # Perdio la carrera del INSERT: el ganador lo esta procesando.
+        raise ReservaOcupada(entidad, id_origen) from e
+
+
+def reservar_estricto(
+    entidad: str,
+    id_origen: str,
+    model_odoo: Optional[str] = None,
+    hash_payload: Optional[str] = None,
+) -> Optional[SyncMap]:
+    """
+    Variante de reservar() para entidades cuyo id_odoo puede ser legitimamente
+    None (p.ej. "conciliacion", que no tiene un unico id en Odoo).
+
+    Devuelve el SyncMap previo si YA estaba PROCESADO (nada que hacer), o None
+    si la reserva se tomo y hay que procesar. Lanza ReservaOcupada igual que
+    reservar().
+    """
+    id_origen = str(id_origen)
+    try:
+        with get_session() as session:
+            mapa = (
+                session.query(SyncMap)
+                .filter_by(entidad=entidad, id_origen=id_origen)
+                .one_or_none()
+            )
+            if mapa is None:
+                session.add(SyncMap(
+                    entidad=entidad, id_origen=id_origen,
+                    model_odoo=model_odoo, hash_payload=hash_payload,
+                    estado=EstadoSync.PROCESANDO.value,
+                ))
+                session.flush()
+                return None
+
+            if mapa.estado == EstadoSync.PROCESADO.value:
+                session.expunge(mapa)
+                return mapa
+            if mapa.estado == EstadoSync.PROCESANDO.value:
+                raise ReservaOcupada(entidad, id_origen, mapa.estado)
+
+            mapa.estado = EstadoSync.PROCESANDO.value
+            if model_odoo is not None:
+                mapa.model_odoo = model_odoo
+            if hash_payload is not None:
+                mapa.hash_payload = hash_payload
+            mapa.error = None
+            return None
+    except IntegrityError as e:
+        raise ReservaOcupada(entidad, id_origen) from e
 
 
 # ---------------------------------------------------------------------------

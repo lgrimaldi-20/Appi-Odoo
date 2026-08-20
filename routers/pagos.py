@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from core.pagos import crear_pago
 from core.seguridad import resolver_tenant, verify_api_key
+from core.state_store import ReservaOcupada
 from core.sincronizador import SincronizacionError
 from core.tasks import sincronizar_pago_task
 from odoo_universal import OdooConnectionError, OdooUniversalAPI
@@ -50,6 +51,11 @@ def sincronizar_pago(req: PagoRequest):
 
     try:
         resultado = crear_pago(req.registro, odoo)
+    except ReservaOcupada as e:
+        # Otra peticion con el mismo id_origen esta procesando ahora mismo.
+        # 409 (y no 500): el cliente puede reintentar en unos segundos.
+        logger.info("RESERVA_OCUPADA | %s", e)
+        raise HTTPException(status_code=409, detail=str(e))
     except SincronizacionError as e:
         logger.warning("PAGO_ERROR | %s", e)
         raise HTTPException(status_code=422, detail=str(e))
