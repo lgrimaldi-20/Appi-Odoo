@@ -110,18 +110,57 @@ class TestErrores:
         mapa = state_store.buscar_mapeo("conciliacion", "F-3:P-3")
         assert mapa.estado == "ERROR"
 
-    def test_pago_sin_move_id_lanza_error(self, entorno):
+    def test_pago_sin_move_id_usa_vinculo_directo(self, entorno):
+        """
+        Odoo 19: un pago "in_process" no tiene move_id (su asiento se crea al
+        casarlo con el extracto). Eso NO es un error: se debe vincular el pago
+        existente a la factura escribiendo invoice_ids (mecanismo B).
+        """
+        conciliacion, _ = entorno
+        odoo = MagicMock()
+        escrituras = []
+
+        def execute(model, method, *args, **kwargs):
+            if model == "account.payment" and method == "read":
+                return [{"move_id": False}]
+            if model == "account.move" and method == "read":
+                # Antes de vincular no hay pago; despues queda "in_payment".
+                if escrituras:
+                    return [{"payment_state": "in_payment", "amount_residual": 100.0,
+                             "matched_payment_ids": [20]}]
+                return [{"payment_state": "not_paid"}]
+            if model == "account.payment" and method == "write":
+                escrituras.append(args)
+                return True
+            return None
+
+        odoo.execute.side_effect = execute
+
+        res = conciliacion.conciliar(
+            10, 20, odoo, factura_id_origen="F-4", pago_id_origen="P-4"
+        )
+
+        assert res["conciliado"] is True
+        assert res["mecanismo"] == "vinculo_pago"
+        assert res["payment_state"] == "in_payment"
+        # Se vinculo el pago YA EXISTENTE (comando (4, id)), sin crear otro.
+        assert escrituras, "no se escribio invoice_ids en el pago"
+        assert escrituras[0][1] == {"invoice_ids": [(4, 10)]}
+        # Nunca se invoca el asistente: crearia un pago duplicado.
+        modelos = [c.args[0] for c in odoo.execute.call_args_list]
+        assert "account.payment.register" not in modelos
+
+    def test_pago_inexistente_lanza_error(self, entorno):
+        """Un pago que no existe en Odoo si es un error."""
         conciliacion, _ = entorno
         odoo = MagicMock()
 
         def execute(model, method, *args, **kwargs):
             if model == "account.payment" and method == "read":
-                return [{"move_id": False}]
-            if method == "search_read":
-                return [{"id": 1, "account_id": [5, "x"], "balance": 100.0}]
+                return []
             return None
 
         odoo.execute.side_effect = execute
 
         with pytest.raises(conciliacion.ConciliacionError):
-            conciliacion.conciliar(10, 20, odoo, factura_id_origen="F-4", pago_id_origen="P-4")
+            conciliacion.conciliar(10, 20, odoo, factura_id_origen="F-5", pago_id_origen="P-5")

@@ -17,20 +17,23 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from odoo_universal import (
+# El .env se carga ANTES de importar los modulos del proyecto: core.state_store
+# lee DATABASE_URL en tiempo de import (a nivel de modulo), asi que si se
+# cargara despues se quedaria con el valor por defecto y el .env se ignoraria.
+load_dotenv()
+
+from odoo_universal import (  # noqa: E402
     OdooConnectionError,
     OdooExecutionError,
     OdooUniversalAPI,
     register_tenant,
     get_tenant,
 )
-from core.state_store import buscar_mapeo, init_db
+from core.state_store import buscar_mapeo, init_db  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuracion inicial
 # ---------------------------------------------------------------------------
-
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
