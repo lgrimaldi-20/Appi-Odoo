@@ -27,8 +27,21 @@ from odoo_universal import OdooExecutionError, OdooUniversalAPI
 
 
 class SincronizacionError(Exception):
-    """Fallo de negocio durante la sincronizacion (mapeo, create o post)."""
-    pass
+    """
+    Fallo de negocio durante la sincronizacion (mapeo, create o post).
+
+    Lleva dos datos que el llamador necesita para decidir si hay algo que
+    COMPENSAR en Odoo:
+      id_odoo   - id del registro si llego a crearse (None si fallo antes).
+      descuadre - True si el fallo fue de validacion de total, es decir: el
+                  registro esta creado y POSTEADO en Odoo pero sus importes no
+                  cuadran con el origen. Es el unico caso en que cancelar
+                  automaticamente es seguro; el resto puede ser transitorio.
+    """
+    def __init__(self, mensaje, id_odoo=None, descuadre=False):
+        super().__init__(mensaje)
+        self.id_odoo = id_odoo
+        self.descuadre = descuadre
 
 
 @dataclass
@@ -121,7 +134,8 @@ def sincronizar_entidad(
         )
         state_store.log(entidad, "postear", "ERROR", id_origen, str(e))
         raise SincronizacionError(
-            f"Creado en Odoo (id={id_odoo}) pero fallo al postear: {e}"
+            f"Creado en Odoo (id={id_odoo}) pero fallo al postear: {e}",
+            id_odoo=id_odoo,
         ) from e
 
     # 5b. VALIDACION DE TOTAL/IMPUESTOS (opcional, si la config lo pide).
@@ -136,7 +150,10 @@ def sincronizar_entidad(
                 error=f"Posteado (id_odoo={id_odoo}) pero descuadre de total: {e}",
             )
             state_store.log(entidad, "validar_total", "ERROR", id_origen, str(e))
-            raise SincronizacionError(f"Descuadre de total en Odoo (id={id_odoo}): {e}") from e
+            raise SincronizacionError(
+                f"Descuadre de total en Odoo (id={id_odoo}): {e}",
+                id_odoo=id_odoo, descuadre=True,
+            ) from e
 
     # 6. PROCESADO.
     state_store.marcar_estado(entidad, id_origen, EstadoSync.PROCESADO)

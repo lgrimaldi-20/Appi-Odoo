@@ -23,16 +23,39 @@ Politica de errores por fila (aislamiento): un fallo de DATOS en una fila la dej
 en ERROR y el poller CONTINUA con las demas. Un fallo de CONEXION (Odoo caido)
 aborta el lote entero y se propaga, para que Celery reintente la pasada completa
 mas tarde (las filas ya procesadas son idempotentes).
+
+Compensacion automatica del descuadre: la validacion de total corre DESPUES del
+action_post, de modo que una factura descuadrada queda posteada en Odoo (asiento
+contable real) aunque el middleware la marque ERROR. El poller la CANCELA
+(rollback.cancelar_factura: button_draft + button_cancel) para no dejar
+contabilidad huerfana. Solo se compensa el descuadre, no cualquier error: es el
+unico caso en que consta que el registro esta mal. La fila queda en ERROR y NO
+se reintenta sola —reintentarla recrearia y volveria a cancelar la misma factura
+en bucle—; el cliente corrige el importe en origen y la reencola.
+Se apaga con POLLER_CANCELAR_DESCUADRE=false.
 """
 
 import logging
+import os
 from dataclasses import dataclass
 
 from core import poller_source, state_store
+from core.rollback import cancelar_factura
 from core.sincronizador import SincronizacionError, sincronizar_entidad
 from odoo_universal import OdooConnectionError, OdooUniversalAPI, get_tenant
 
 logger = logging.getLogger("api-odoo")
+
+
+def _cancelacion_activa() -> bool:
+    """
+    Si el poller debe CANCELAR en Odoo las facturas que quedaron posteadas pero
+    descuadradas. Se lee en cada pasada (no al importar) para poder apagarlo en
+    caliente. Por defecto activo.
+    """
+    return os.getenv("POLLER_CANCELAR_DESCUADRE", "true").strip().lower() not in (
+        "false", "0", "no",
+    )
 
 
 @dataclass
@@ -76,9 +99,34 @@ def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
         raise
     except SincronizacionError as e:
         # Fallo de datos (mapeo, create, post, descuadre): aisla la fila.
-        poller_source.marcar_resultado(fila_id, "ERROR", error_detalle=str(e))
-        state_store.log(entidad, "poller", "ERROR", id_origen, f"cola#{fila_id}: {e}")
-        logger.info("Poller: fila cola#%s en ERROR: %s", fila_id, e)
+        detalle = str(e)
+
+        # COMPENSACION: un descuadre de total deja la factura POSTEADA en Odoo
+        # (la validacion ocurre despues del action_post). Ese asiento contable
+        # es real y nadie lo dio por bueno, asi que se cancela para no dejar
+        # contabilidad huerfana esperando revision manual.
+        #
+        # Solo se compensa el descuadre: es el unico fallo en que sabemos que
+        # el registro esta objetivamente mal. Un fallo de action_post, por
+        # ejemplo, deja la factura en borrador (no contabiliza nada) y puede
+        # deberse a una causa transitoria.
+        if getattr(e, "descuadre", False) and e.id_odoo and _cancelacion_activa():
+            cancelada = cancelar_factura(
+                e.id_odoo, odoo, entidad=entidad, id_origen=id_origen,
+                motivo=f"Descuadre detectado por el poller (cola#{fila_id})",
+            )
+            detalle += (
+                f" | Factura id_odoo={e.id_odoo} CANCELADA automaticamente en Odoo."
+                if cancelada else
+                f" | NO se pudo cancelar id_odoo={e.id_odoo}: REQUIERE INTERVENCION MANUAL."
+            )
+
+        # La fila queda en ERROR, no PENDIENTE: reintentarla sola volveria a
+        # crear y cancelar la misma factura en bucle. El cliente corrige el
+        # importe en su sistema y la reencola.
+        poller_source.marcar_resultado(fila_id, "ERROR", error_detalle=detalle)
+        state_store.log(entidad, "poller", "ERROR", id_origen, f"cola#{fila_id}: {detalle}")
+        logger.info("Poller: fila cola#%s en ERROR: %s", fila_id, detalle)
         return False
 
 

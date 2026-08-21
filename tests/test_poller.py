@@ -203,3 +203,120 @@ def _contar_creates(odoo):
         for c in odoo.execute.call_args_list
         if c.args[:2] == ("account.move", "create")
     )
+
+
+# ---------------------------------------------------------------------------
+# Compensacion automatica del descuadre
+# ---------------------------------------------------------------------------
+
+def _odoo_descuadrado(total_odoo=600.0):
+    """
+    Mock de Odoo que postea la factura pero devuelve un amount_total distinto
+    del enviado por el origen -> dispara DescuadreError DESPUES del action_post.
+    Registra las llamadas de cancelacion para poder afirmarlas.
+    """
+    odoo = MagicMock()
+    odoo.acciones = []
+
+    def execute(model, method, *args, **kwargs):
+        if model == "res.partner" and method == "search_read":
+            return [{"id": 7}]
+        if model == "account.move" and method == "create":
+            return 999
+        if model == "account.move" and method == "action_post":
+            return True
+        if model == "account.move" and method == "read":
+            return [{"amount_total": total_odoo}]
+        if model == "account.move" and method in ("button_draft", "button_cancel"):
+            odoo.acciones.append(method)
+            return True
+        return None
+
+    odoo.execute.side_effect = execute
+    return odoo
+
+
+def _encolar_descuadre(poller_source, id_origen="DESC-1"):
+    """Encola una factura cuyo total (500) no cuadrara con Odoo (600)."""
+    with poller_source.get_source_session() as s:
+        s.add(poller_source.ColaSincronizacion(
+            entidad="factura", id_origen=id_origen,
+            payload={
+                "factura_id": id_origen, "cliente_nif": "B1",
+                "fecha": "2026-08-21", "total": 500.0,
+                "lineas": [[0, 0, {"product_id": 1, "quantity": 1, "price_unit": 600.0}]],
+            },
+            estado="PENDIENTE",
+        ))
+        s.commit()
+
+
+class TestCancelacionAutomatica:
+    def test_cancela_la_factura_descuadrada_en_odoo(self, entorno, monkeypatch):
+        """
+        Una factura posteada pero descuadrada deja un asiento contable real que
+        nadie dio por bueno: el poller debe cancelarlo (draft + cancel).
+        """
+        poller, poller_source, _ = entorno
+        monkeypatch.setenv("POLLER_CANCELAR_DESCUADRE", "true")
+        odoo = _odoo_descuadrado()
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: odoo)
+        _encolar_descuadre(poller_source)
+
+        res = poller.procesar_lote()
+
+        assert res.con_error == 1
+        assert odoo.acciones == ["button_draft", "button_cancel"], (
+            "la factura descuadrada quedaria posteada en Odoo"
+        )
+
+    def test_la_fila_queda_en_error_y_lo_deja_dicho(self, entorno, monkeypatch):
+        """No se reintenta sola (seria un bucle crear/cancelar) y consta el motivo."""
+        poller, poller_source, _ = entorno
+        monkeypatch.setenv("POLLER_CANCELAR_DESCUADRE", "true")
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: _odoo_descuadrado())
+        _encolar_descuadre(poller_source, "DESC-2")
+
+        poller.procesar_lote()
+
+        with poller_source.get_source_session() as s:
+            fila = s.query(poller_source.ColaSincronizacion).filter_by(
+                id_origen="DESC-2").one()
+        assert fila.estado == "ERROR"
+        assert "CANCELADA" in (fila.error_detalle or "")
+
+    def test_se_puede_desactivar_por_entorno(self, entorno, monkeypatch):
+        """Con POLLER_CANCELAR_DESCUADRE=false la factura se deja para revision."""
+        poller, poller_source, _ = entorno
+        monkeypatch.setenv("POLLER_CANCELAR_DESCUADRE", "false")
+        odoo = _odoo_descuadrado()
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: odoo)
+        _encolar_descuadre(poller_source, "DESC-3")
+
+        poller.procesar_lote()
+
+        assert odoo.acciones == [], "no debia cancelar nada estando desactivado"
+
+    def test_no_cancela_cuando_el_fallo_es_de_mapeo(self, entorno, monkeypatch):
+        """
+        Si falla el mapeo NO se creo nada en Odoo: no hay nada que cancelar y
+        cancelar algo seria tocar un registro ajeno.
+        """
+        poller, poller_source, _ = entorno
+        monkeypatch.setenv("POLLER_CANCELAR_DESCUADRE", "true")
+        odoo = _odoo(existe_partner=False)   # el cliente no existe -> MapeoError
+        odoo.acciones = []
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: odoo)
+        with poller_source.get_source_session() as s:
+            s.add(poller_source.ColaSincronizacion(
+                entidad="factura", id_origen="SIN-CLIENTE",
+                payload={"factura_id": "SIN-CLIENTE", "cliente_nif": "NADIE",
+                         "fecha": "2026-08-21", "total": 10.0, "lineas": []},
+                estado="PENDIENTE"))
+            s.commit()
+
+        res = poller.procesar_lote()
+
+        assert res.con_error == 1
+        llamadas = [c.args[1] for c in odoo.execute.call_args_list if len(c.args) > 1]
+        assert "button_cancel" not in llamadas
