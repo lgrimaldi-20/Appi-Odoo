@@ -40,11 +40,39 @@ import os
 from dataclasses import dataclass
 
 from core import poller_source, state_store
+from core.asientos import AsientoError, crear_asiento
+from core.inventario import InventarioError, ajustar_stock
 from core.rollback import cancelar_factura
 from core.sincronizador import SincronizacionError, sincronizar_entidad
 from odoo_universal import OdooConnectionError, OdooUniversalAPI, get_tenant
 
 logger = logging.getLogger("api-odoo")
+
+
+def _despachar(entidad: str, payload: dict, odoo: OdooUniversalAPI):
+    """
+    Envia una fila de la cola al modulo que le corresponde.
+
+    La mayoria de entidades (factura, pago...) son traducciones declarativas y
+    pasan por sincronizar_entidad + mappings.yaml. Pero inventario y asientos
+    tienen esquema FIJO y su propia logica de negocio (modos de ajuste, cuadre
+    debe/haber), asi que no viven en el YAML: sin este despacho, el modo pull
+    solo admitiria facturas y pagos.
+
+    Devuelve (id_odoo, texto_resultado) para la traza.
+    """
+    if entidad == "ajuste_stock":
+        r = ajustar_stock(payload, odoo)
+        return r.get("quant_id"), f"quant_id={r.get('quant_id')}"
+    if entidad == "asiento":
+        r = crear_asiento(payload, odoo)
+        return r.get("id_odoo"), f"id_odoo={r.get('id_odoo')}"
+
+    resultado = sincronizar_entidad(entidad, payload, odoo)
+    return resultado.id_odoo, (
+        f"id_odoo={resultado.id_odoo}"
+        + (" (idempotente)" if resultado.idempotente else "")
+    )
 
 
 def _cancelacion_activa() -> bool:
@@ -80,13 +108,9 @@ def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
     payload = fila["payload"]
 
     try:
-        resultado = sincronizar_entidad(entidad, payload, odoo)
+        _, detalle_ok = _despachar(entidad, payload, odoo)
         poller_source.marcar_resultado(fila_id, "PROCESADO")
-        state_store.log(
-            entidad, "poller", "OK", id_origen,
-            f"cola#{fila_id} -> id_odoo={resultado.id_odoo}"
-            + (" (idempotente)" if resultado.idempotente else ""),
-        )
+        state_store.log(entidad, "poller", "OK", id_origen, f"cola#{fila_id} -> {detalle_ok}")
         return True
     except OdooConnectionError:
         # Fallo de conexion: no es culpa de la fila. Se deja PENDIENTE (no se
@@ -97,8 +121,9 @@ def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
             fila_id, entidad, id_origen,
         )
         raise
-    except SincronizacionError as e:
-        # Fallo de datos (mapeo, create, post, descuadre): aisla la fila.
+    except (SincronizacionError, InventarioError, AsientoError) as e:
+        # Fallo de datos (mapeo, create, post, descuadre, cuadre, stock
+        # insuficiente...): aisla la fila y sigue con el resto del lote.
         detalle = str(e)
 
         # COMPENSACION: un descuadre de total deja la factura POSTEADA en Odoo

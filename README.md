@@ -133,7 +133,10 @@ Cliente escribe -> poller lee (Celery Beat) -> Odoo -> escribe el resultado de v
 
 Se activa apuntando `SOURCE_DATABASE_URL` a la base del cliente, que debe tener
 una tabla `cola_sincronizacion` (`entidad`, `id_origen`, `payload` JSON,
-`estado` PENDIENTE|PROCESADO|ERROR, `error_detalle`). Es el **unico** permiso de
+`estado` PENDIENTE|PROCESADO|ERROR, `error_detalle`). La columna `entidad`
+acepta `factura`, `pago`, `ajuste_stock` y `asiento`: el poller despacha cada
+una a su modulo, asi que por modo pull se puede enviar todo lo que admite el
+modo push. Es el **unico** permiso de
 escritura que el middleware necesita alli: marcar el resultado.
 
 ```bash

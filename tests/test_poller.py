@@ -320,3 +320,76 @@ class TestCancelacionAutomatica:
         assert res.con_error == 1
         llamadas = [c.args[1] for c in odoo.execute.call_args_list if len(c.args) > 1]
         assert "button_cancel" not in llamadas
+
+
+class TestDespachoPorEntidad:
+    """
+    inventario y asientos NO viven en mappings.yaml (tienen esquema fijo), asi
+    que sincronizar_entidad los rechaza con "sin mapeo definido". Sin un
+    despacho explicito, el modo pull solo admitiria facturas y pagos.
+    """
+
+    def test_despacha_un_ajuste_de_stock(self, entorno, monkeypatch):
+        poller, poller_source, _ = entorno
+        llamadas = []
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: MagicMock())
+        monkeypatch.setattr(
+            poller, "ajustar_stock",
+            lambda reg, odoo: llamadas.append(reg) or {"quant_id": 42},
+        )
+        with poller_source.get_source_session() as s:
+            s.add(poller_source.ColaSincronizacion(
+                entidad="ajuste_stock", id_origen="AJ-1",
+                payload={"ajuste_id": "AJ-1", "producto_ref": "X", "cantidad": 5},
+                estado="PENDIENTE"))
+            s.commit()
+
+        res = poller.procesar_lote()
+
+        assert res.procesadas == 1 and res.con_error == 0
+        assert llamadas, "no se llamo a ajustar_stock"
+
+    def test_despacha_un_asiento(self, entorno, monkeypatch):
+        poller, poller_source, _ = entorno
+        llamadas = []
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: MagicMock())
+        monkeypatch.setattr(
+            poller, "crear_asiento",
+            lambda reg, odoo: llamadas.append(reg) or {"id_odoo": 77},
+        )
+        with poller_source.get_source_session() as s:
+            s.add(poller_source.ColaSincronizacion(
+                entidad="asiento", id_origen="AS-1",
+                payload={"asiento_id": "AS-1", "diario_codigo": "MISC", "lineas": []},
+                estado="PENDIENTE"))
+            s.commit()
+
+        res = poller.procesar_lote()
+
+        assert res.procesadas == 1 and res.con_error == 0
+        assert llamadas, "no se llamo a crear_asiento"
+
+    def test_un_error_de_inventario_aisla_la_fila(self, entorno, monkeypatch):
+        """Stock insuficiente no debe abortar el lote entero."""
+        from core.inventario import InventarioError
+        poller, poller_source, _ = entorno
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: MagicMock())
+
+        def falla(reg, odoo):
+            raise InventarioError("Stock insuficiente")
+        monkeypatch.setattr(poller, "ajustar_stock", falla)
+
+        with poller_source.get_source_session() as s:
+            s.add(poller_source.ColaSincronizacion(
+                entidad="ajuste_stock", id_origen="AJ-MALO",
+                payload={"ajuste_id": "AJ-MALO"}, estado="PENDIENTE"))
+            s.commit()
+
+        res = poller.procesar_lote()
+
+        assert res.con_error == 1
+        with poller_source.get_source_session() as s:
+            fila = s.query(poller_source.ColaSincronizacion).filter_by(
+                id_origen="AJ-MALO").one()
+        assert fila.estado == "ERROR"
+        assert "Stock insuficiente" in (fila.error_detalle or "")
