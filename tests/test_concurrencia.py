@@ -147,3 +147,127 @@ class TestSesionHttpReutilizada:
         assert post.called
         # Una unica Session viva en el conector.
         assert isinstance(api._session, odoo_universal.requests.Session)
+
+
+class TestFalloDeConexionTrasCrear:
+    """
+    Odoo no participa en la transaccion del middleware: si la conexion se corta
+    DESPUES del create/post, el registro queda vivo en Odoo aunque el proceso
+    aborte. La reserva debe liberarse y el reintento adoptar ese registro.
+    """
+
+    def _entorno(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'c.db'}")
+        import core.state_store as state_store
+        importlib.reload(state_store)
+        state_store.init_db()
+        import core.sincronizador as sincronizador
+        importlib.reload(sincronizador)
+        return sincronizador, state_store
+
+    def _registro(self, ref="NET-1"):
+        return {"factura_id": ref, "cliente_nif": "B1",
+                "fecha": "2026-08-21", "total": 100.0, "lineas": []}
+
+    def test_la_reserva_se_libera_para_poder_reintentar(self, tmp_path, monkeypatch):
+        """
+        Sin esto la fila quedaria en PROCESANDO y reservar() la rechazaria para
+        siempre: bloqueada de forma permanente.
+        """
+        from unittest.mock import MagicMock
+        from odoo_universal import OdooConnectionError
+        sincronizador, state_store = self._entorno(tmp_path, monkeypatch)
+
+        odoo = MagicMock()
+        def execute(model, method, *a, **k):
+            if model == "res.partner":
+                return [{"id": 7}]
+            if method == "create":
+                return 555
+            if method == "action_post":
+                raise OdooConnectionError("red caida tras postear")
+            return None
+        odoo.execute.side_effect = execute
+
+        with pytest.raises(OdooConnectionError):
+            sincronizador.sincronizar_entidad("factura", self._registro("NET-LIBERAR"), odoo)
+
+        mapa = state_store.buscar_mapeo("factura", "NET-LIBERAR")
+        assert mapa.estado == state_store.EstadoSync.PENDIENTE.value, (
+            "quedaria bloqueada en PROCESANDO"
+        )
+        assert mapa.id_odoo == 555, "se pierde el rastro del registro huerfano"
+
+    def test_el_reintento_adopta_el_registro_y_no_lo_duplica(self, tmp_path, monkeypatch):
+        """El segundo intento debe continuar sobre el id ya creado."""
+        from unittest.mock import MagicMock
+        from odoo_universal import OdooConnectionError
+        sincronizador, state_store = self._entorno(tmp_path, monkeypatch)
+
+        creates = []
+        fallar = {"si": True}
+        estado = {"valor": "draft"}
+
+        odoo = MagicMock()
+        def execute(model, method, *a, **k):
+            if model == "res.partner":
+                return [{"id": 7}]
+            if method == "create":
+                creates.append(1)
+                return 555
+            if method == "action_post":
+                if fallar["si"]:
+                    # Odoo SI llego a postear; lo que se pierde es la respuesta.
+                    estado["valor"] = "posted"
+                    raise OdooConnectionError("red caida")
+                return True
+            if method == "read":
+                return [{"state": estado["valor"], "amount_total": 100.0}]
+            return None
+        odoo.execute.side_effect = execute
+
+        with pytest.raises(OdooConnectionError):
+            sincronizador.sincronizar_entidad("factura", self._registro("NET-ADOPTA"), odoo)
+
+        fallar["si"] = False
+        res = sincronizador.sincronizar_entidad("factura", self._registro("NET-ADOPTA"), odoo)
+
+        assert res.id_odoo == 555
+        assert res.estado == state_store.EstadoSync.PROCESADO.value
+        assert len(creates) == 1, f"se creo {len(creates)} veces: duplicado en Odoo"
+
+    def test_no_repostea_lo_que_ya_esta_posteado(self, tmp_path, monkeypatch):
+        """
+        action_post NO es idempotente en Odoo 19: sobre un asiento ya posteado
+        responde "debe ser un borrador". Al retomar hay que saltarse el paso.
+        """
+        from unittest.mock import MagicMock
+        from odoo_universal import OdooConnectionError
+        sincronizador, state_store = self._entorno(tmp_path, monkeypatch)
+
+        posts = []
+        fallar = {"si": True}
+        estado = {"valor": "draft"}
+        odoo = MagicMock()
+        def execute(model, method, *a, **k):
+            if model == "res.partner":
+                return [{"id": 7}]
+            if method == "create":
+                return 555
+            if method == "action_post":
+                if fallar["si"]:
+                    estado["valor"] = "posted"   # Odoo lo posteo de verdad
+                    raise OdooConnectionError("red caida")
+                posts.append(1)
+                return True
+            if method == "read":
+                return [{"state": estado["valor"], "amount_total": 100.0}]
+            return None
+        odoo.execute.side_effect = execute
+
+        with pytest.raises(OdooConnectionError):
+            sincronizador.sincronizar_entidad("factura", self._registro("NET-REPOST"), odoo)
+        fallar["si"] = False
+        sincronizador.sincronizar_entidad("factura", self._registro("NET-REPOST"), odoo)
+
+        assert posts == [], "reposteo un asiento ya posteado -> error de Odoo"

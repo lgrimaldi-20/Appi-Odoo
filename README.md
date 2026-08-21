@@ -122,6 +122,49 @@ responder con un `task_id`; el resultado se consulta luego en `/estado/...`.
 La cola usa **Celery + Redis**. Si `CELERY_BROKER_URL` esta vacio, las tareas
 corren en **modo eager** (sincrono inline, sin worker) — util en desarrollo.
 
+## Modo pull (poller): el cliente no llama al middleware
+
+Alternativa al modo push. El cliente deja los registros en **su propia base de
+datos** (por aislamiento: es dueno de sus datos) y el middleware la sondea.
+
+```
+Cliente escribe -> poller lee (Celery Beat) -> Odoo -> escribe el resultado de vuelta
+```
+
+Se activa apuntando `SOURCE_DATABASE_URL` a la base del cliente, que debe tener
+una tabla `cola_sincronizacion` (`entidad`, `id_origen`, `payload` JSON,
+`estado` PENDIENTE|PROCESADO|ERROR, `error_detalle`). Es el **unico** permiso de
+escritura que el middleware necesita alli: marcar el resultado.
+
+```bash
+# Tick automatico cada POLLER_INTERVALO_SEG (30 s por defecto). Necesita Redis.
+celery -A core.celery_app.celery_app beat --loglevel=info
+
+# Pasada manual, sin esperar al tick (util en pruebas o desde el panel)
+curl -X POST http://localhost:8000/poller/ejecutar -H "X-Api-Key: $API_KEY"
+# -> {"leidas": 5, "procesadas": 3, "con_error": 2}
+```
+
+**Aislamiento de errores:** un fallo de datos deja esa fila en `ERROR` y el
+poller **continua con las demas**. Un fallo de conexion aborta el lote entero y
+Celery reintenta la pasada completa mas tarde.
+
+**Doble idempotencia:** la cola dice *que* enviar; el `sync_map` del middleware
+dice *que ya* se envio. Reencolar una fila ya procesada **no** duplica nada en
+Odoo.
+
+## Panel de observabilidad
+
+```
+http://localhost:8000/panel
+```
+
+Dashboard de solo lectura sobre la base de control: totales por estado y
+entidad, ultimas sincronizaciones, logs y el detalle de cada registro con su
+traza completa (`crear -> postear -> validar_total -> rollback -> ...`). Es
+donde se revisan los `ERROR`. La pagina pide la API Key y la envia en cada
+consulta; los endpoints de datos (`/panel/api/*`) van protegidos.
+
 ## Seguridad
 
 | Mecanismo | Configuracion |
@@ -151,9 +194,51 @@ corren en **modo eager** (sincrono inline, sin worker) — util en desarrollo.
 |--------|-------------|
 | 200 | Operacion exitosa |
 | 401 | API Key invalida o ausente |
+| 409 | Ese mismo `id_origen` se esta procesando ahora mismo (reintenta en unos segundos) |
 | 422 | Modelo/metodo no permitido, error de Odoo, mapeo, conciliacion o descuadre |
 | 429 | Rate limit superado |
 | 503 | Odoo no disponible |
+
+## Que pasa cuando algo falla
+
+El middleware es idempotente y no deja registros a medias en Odoo. Esta tabla
+resume que ocurre en cada tipo de fallo y **quien tiene que actuar**.
+
+| Fallo | Estado en Odoo | Estado en el middleware | Se compensa solo | Que hacer |
+|-------|----------------|-------------------------|------------------|-----------|
+| Cliente/producto/diario inexistente (mapeo) | nada creado | `ERROR` | no hace falta | crear el dato maestro en Odoo y reenviar |
+| Odoo rechaza el `create` (campo invalido) | nada creado | `ERROR` | no hace falta | corregir el payload y reenviar |
+| Falla el `action_post` | creado **en borrador** (no contabiliza) | `ERROR` con `id_odoo` | **no** | revisar en Odoo: postear a mano o borrar |
+| **Descuadre de total** | **posteado** (asiento real) | `ERROR` con `id_odoo` | **si** (poller) | corregir el importe en origen y reencolar |
+| Odoo caido / red | puede haber quedado creado | `PENDIENTE`, conserva `id_odoo` | se **adopta** al reintentar | nada: se reintenta solo |
+| Peticion duplicada simultanea | 1 solo registro | `PROCESANDO` | — | la segunda recibe **409** |
+| Reenvio de algo ya procesado | 1 solo registro | `PROCESADO` | — | responde `idempotente: true` |
+
+### Por que el descuadre es el caso especial
+
+La validacion de total corre **despues** del `action_post` (hay que preguntarle
+a Odoo cuanto suma con sus impuestos). Si no cuadra, la factura ya esta
+**posteada**: es un asiento contable real que nadie dio por bueno.
+
+El poller la **cancela automaticamente** (`button_draft` + `button_cancel`) para
+no dejar contabilidad huerfana. Se desactiva con `POLLER_CANCELAR_DESCUADRE=false`.
+
+Solo se cancela el descuadre, a proposito:
+
+- un fallo de `action_post` deja la factura **en borrador**: no contabiliza nada
+  y la causa puede ser transitoria;
+- un fallo de mapeo **no llego a crear nada**, asi que no hay nada que cancelar.
+
+La fila queda en `ERROR` y **no se reintenta sola**: reintentarla recrearia y
+volveria a cancelar la misma factura en bucle en cada pasada. El descuadre suele
+venir de un impuesto mal mapeado, y eso no se arregla con el tiempo.
+
+### Si se cae la conexion a mitad
+
+Odoo no participa en la transaccion del middleware: si la red cae despues del
+`create`, el registro queda vivo en Odoo aunque la peticion aborte. En ese caso
+el estado vuelve a `PENDIENTE` **conservando el `id_odoo`**, y el reintento
+**adopta** ese registro en vez de crear un duplicado.
 
 ## Docker
 

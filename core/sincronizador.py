@@ -23,7 +23,11 @@ from dataclasses import dataclass
 
 from core import impuestos, mapper, state_store
 from core.models_db import EstadoSync
-from odoo_universal import OdooExecutionError, OdooUniversalAPI
+from odoo_universal import (
+    OdooConnectionError,
+    OdooExecutionError,
+    OdooUniversalAPI,
+)
 
 
 class SincronizacionError(Exception):
@@ -99,6 +103,48 @@ def sincronizar_entidad(
             idempotente=True,
         )
 
+    # A partir de aqui se toca Odoo. Un fallo de CONEXION no es culpa del dato:
+    # hay que LIBERAR la reserva (dejarla en PENDIENTE) para que el reintento
+    # pueda retomarla. Si se quedara en PROCESANDO, reservar() la rechazaria
+    # para siempre y la fila quedaria bloqueada de forma permanente.
+    try:
+        return _sincronizar_contra_odoo(
+            entidad, registro, odoo, id_origen, conf, model_odoo, hash_payload,
+        )
+    except OdooConnectionError as e:
+        # Si el create llego a completarse, el id_odoo ya esta en sync_map
+        # (se guarda inmediatamente). Se conserva: el reintento lo vera y
+        # adoptara ese registro en vez de crear un duplicado en Odoo.
+        mapa = state_store.buscar_mapeo(entidad, id_origen)
+        huerfano = mapa.id_odoo if mapa else None
+        detalle = f"Conexion con Odoo perdida: {e}"
+        if huerfano:
+            detalle += (
+                f" | El registro id_odoo={huerfano} PUEDE haber quedado creado "
+                f"en Odoo; el reintento lo adoptara en vez de duplicarlo."
+            )
+        state_store.marcar_estado(
+            entidad, id_origen, EstadoSync.PENDIENTE, error=detalle,
+        )
+        state_store.log(entidad, "conexion", "ERROR", id_origen, detalle)
+        raise
+
+
+def _sincronizar_contra_odoo(
+    entidad: str,
+    registro: dict,
+    odoo: OdooUniversalAPI,
+    id_origen: str,
+    conf: dict,
+    model_odoo: str,
+    hash_payload: str,
+) -> ResultadoSync:
+    """
+    Pasos que hablan con Odoo (mapeo -> create -> post -> validar total).
+
+    Separado de sincronizar_entidad para que la reserva se libere de forma
+    uniforme ante cualquier OdooConnectionError, ocurra en el paso que ocurra.
+    """
     # 3. MAPEO (traduce y valida datos maestros).
     try:
         valores = mapper.mapear(entidad, registro, odoo)
@@ -108,6 +154,21 @@ def sincronizar_entidad(
         raise SincronizacionError(f"Error de mapeo: {e}") from e
 
     # 4. CREATE en Odoo.
+    # Si una pasada anterior se corto por un fallo de conexion DESPUES del
+    # create, el id_odoo ya consta en sync_map: se adopta ese registro en vez
+    # de crear un duplicado (Odoo no participa en la transaccion, asi que el
+    # create pudo completarse aunque la respuesta no llegara).
+    mapa_previo = state_store.buscar_mapeo(entidad, id_origen)
+    if mapa_previo is not None and mapa_previo.id_odoo:
+        id_odoo = mapa_previo.id_odoo
+        state_store.log(
+            entidad, "adoptar", "OK", id_origen,
+            f"Se retoma id_odoo={id_odoo} de un intento interrumpido; no se recrea.",
+        )
+        return _postear_y_validar(
+            entidad, registro, odoo, id_origen, conf, model_odoo, id_odoo,
+        )
+
     try:
         id_odoo = odoo.execute(model_odoo, "create", valores)
         state_store.registrar_mapeo(
@@ -121,9 +182,52 @@ def sincronizar_entidad(
         state_store.log(entidad, "crear", "ERROR", id_origen, str(e))
         raise SincronizacionError(f"Error al crear en Odoo: {e}") from e
 
+    return _postear_y_validar(
+        entidad, registro, odoo, id_origen, conf, model_odoo, id_odoo,
+    )
+
+
+def _ya_posteado(odoo: OdooUniversalAPI, model_odoo: str, id_odoo: int) -> bool:
+    """
+    Si el registro ya esta posteado en Odoo. Se consulta al RETOMAR un intento
+    interrumpido: action_post sobre algo ya posteado falla con "debe ser un
+    borrador", asi que hay que saltarse el paso en vez de provocar ese error.
+
+    account.payment usa otros estados (Odoo 19: in_process/paid), de ahi que se
+    comprueben ambos vocabularios.
+    """
+    datos = odoo.execute(model_odoo, "read", [id_odoo], fields=["state"])
+    # Ante una respuesta inesperada se responde False: como mucho se intenta un
+    # action_post de mas, que Odoo rechaza con un error claro. Devolver True por
+    # error seria peor: se saltaria el posteo y la factura quedaria en borrador
+    # dada por buena.
+    if not isinstance(datos, list) or not datos or not isinstance(datos[0], dict):
+        return False
+    return datos[0].get("state") in ("posted", "in_process", "paid")
+
+
+def _postear_y_validar(
+    entidad: str,
+    registro: dict,
+    odoo: OdooUniversalAPI,
+    id_origen: str,
+    conf: dict,
+    model_odoo: str,
+    id_odoo: int,
+) -> ResultadoSync:
+    """
+    Postea el registro y valida su total. Separado del create para poder
+    RETOMARLO sobre un id_odoo ya existente: si un intento anterior se corto
+    tras el create, hay que continuar desde aqui, no crear otro registro.
+
+    OJO: action_post NO es idempotente en Odoo 19. Reposteario un asiento ya
+    posteado devuelve "El asiento (...) debe ser un borrador". Por eso al
+    retomar se consulta primero el estado y solo se postea si sigue en draft.
+    """
     # 5. POST (action_post) para generar los asientos contables.
     try:
-        odoo.execute(model_odoo, "action_post", [id_odoo])
+        if not _ya_posteado(odoo, model_odoo, id_odoo):
+            odoo.execute(model_odoo, "action_post", [id_odoo])
         state_store.log(entidad, "postear", "OK", id_origen, f"id_odoo={id_odoo}")
     except OdooExecutionError as e:
         # La factura/pago quedo creada pero en borrador. Se marca ERROR para
