@@ -104,30 +104,13 @@ def sincronizar_entidad(
         )
 
     # A partir de aqui se toca Odoo. Un fallo de CONEXION no es culpa del dato:
-    # hay que LIBERAR la reserva (dejarla en PENDIENTE) para que el reintento
-    # pueda retomarla. Si se quedara en PROCESANDO, reservar() la rechazaria
-    # para siempre y la fila quedaria bloqueada de forma permanente.
-    try:
+    # hay que LIBERAR la reserva (dejarla en PENDIENTE, conservando el id_odoo)
+    # para que el reintento pueda retomarla y adoptar lo que hubiera quedado
+    # creado. En PROCESANDO, reservar() la rechazaria para siempre.
+    with state_store.reserva_liberada_si_cae_odoo(entidad, id_origen):
         return _sincronizar_contra_odoo(
             entidad, registro, odoo, id_origen, conf, model_odoo, hash_payload,
         )
-    except OdooConnectionError as e:
-        # Si el create llego a completarse, el id_odoo ya esta en sync_map
-        # (se guarda inmediatamente). Se conserva: el reintento lo vera y
-        # adoptara ese registro en vez de crear un duplicado en Odoo.
-        mapa = state_store.buscar_mapeo(entidad, id_origen)
-        huerfano = mapa.id_odoo if mapa else None
-        detalle = f"Conexion con Odoo perdida: {e}"
-        if huerfano:
-            detalle += (
-                f" | El registro id_odoo={huerfano} PUEDE haber quedado creado "
-                f"en Odoo; el reintento lo adoptara en vez de duplicarlo."
-            )
-        state_store.marcar_estado(
-            entidad, id_origen, EstadoSync.PENDIENTE, error=detalle,
-        )
-        state_store.log(entidad, "conexion", "ERROR", id_origen, detalle)
-        raise
 
 
 def _sincronizar_contra_odoo(

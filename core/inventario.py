@@ -168,81 +168,85 @@ def ajustar_stock(registro: dict, odoo: OdooUniversalAPI) -> dict:
             "quant_id": previo.id_odoo,
         }
 
-    try:
-        producto_id = _resolver_producto(odoo, registro)
-        ubicacion_id = _resolver_ubicacion(odoo, registro)
-        quant_id, actual = _cantidad_actual(odoo, producto_id, ubicacion_id)
+    # Todo lo que sigue habla con Odoo. Si se cae la conexion hay que LIBERAR
+    # la reserva: si se quedara en PROCESANDO, reservar_estricto la rechazaria
+    # en cada intento posterior y el ajuste quedaria bloqueado para siempre.
+    with state_store.reserva_liberada_si_cae_odoo(ENTIDAD, ajuste_id):
+        try:
+            producto_id = _resolver_producto(odoo, registro)
+            ubicacion_id = _resolver_ubicacion(odoo, registro)
+            quant_id, actual = _cantidad_actual(odoo, producto_id, ubicacion_id)
 
-        # Cantidad final segun el modo.
-        if modo == "fijar":
-            final = cantidad
-        elif modo == "incrementar":
-            final = actual + cantidad
-        else:  # decrementar
-            final = actual - cantidad
-            if final < 0:
-                raise InventarioError(
-                    f"Stock insuficiente: actual={actual}, se intenta retirar {cantidad}."
+            # Cantidad final segun el modo.
+            if modo == "fijar":
+                final = cantidad
+            elif modo == "incrementar":
+                final = actual + cantidad
+            else:  # decrementar
+                final = actual - cantidad
+                if final < 0:
+                    raise InventarioError(
+                        f"Stock insuficiente: actual={actual}, se intenta retirar {cantidad}."
+                    )
+
+            # Escribe la cantidad contada y aplica el ajuste (genera el movimiento).
+            # inventory_quantity_set=True es OBLIGATORIO desde Odoo 17: marca que el
+            # conteo ha sido introducido. Sin el, action_apply_inventory considera
+            # que no hay cantidad contada y ajustaria contra 0 (o no haria nada).
+            valores_quant = {
+                "inventory_quantity": final,
+                "inventory_quantity_set": True,
+            }
+            if quant_id is None:
+                quant_id = odoo.execute(
+                    "stock.quant",
+                    "create",
+                    {
+                        "product_id": producto_id,
+                        "location_id": ubicacion_id,
+                        **valores_quant,
+                    },
                 )
+            else:
+                odoo.execute("stock.quant", "write", [quant_id], valores_quant)
 
-        # Escribe la cantidad contada y aplica el ajuste (genera el movimiento).
-        # inventory_quantity_set=True es OBLIGATORIO desde Odoo 17: marca que el
-        # conteo ha sido introducido. Sin el, action_apply_inventory considera
-        # que no hay cantidad contada y ajustaria contra 0 (o no haria nada).
-        valores_quant = {
-            "inventory_quantity": final,
-            "inventory_quantity_set": True,
+            odoo.execute("stock.quant", "action_apply_inventory", [quant_id])
+
+        except InventarioError as e:
+            state_store.marcar_estado(ENTIDAD, ajuste_id, EstadoSync.ERROR, error=str(e))
+            state_store.log(ENTIDAD, "ajustar", "ERROR", ajuste_id, str(e))
+            raise
+        except OdooExecutionError as e:
+            state_store.marcar_estado(ENTIDAD, ajuste_id, EstadoSync.ERROR, error=str(e))
+            state_store.log(ENTIDAD, "ajustar", "ERROR", ajuste_id, str(e))
+            raise InventarioError(f"Error de Odoo al ajustar stock: {e}") from e
+
+        state_store.registrar_mapeo(
+            ENTIDAD, ajuste_id,
+            model_odoo="stock.quant", id_odoo=quant_id,
+            estado=EstadoSync.PROCESADO,
+        )
+        state_store.log(
+            ENTIDAD, "ajustar", "OK", ajuste_id,
+            f"producto={producto_id} ubicacion={ubicacion_id} {actual} -> {final} "
+            f"(modo={modo}). Motivo: {registro.get('motivo', '')}",
+        )
+        logger.info(
+            "STOCK_AJUSTE | ajuste=%s producto=%s %s->%s modo=%s",
+            ajuste_id, producto_id, actual, final, modo,
+        )
+
+        return {
+            "ajuste_id": ajuste_id,
+            "aplicado": True,
+            "idempotente": False,
+            "quant_id": quant_id,
+            "producto_id_odoo": producto_id,
+            "ubicacion_id_odoo": ubicacion_id,
+            "cantidad_anterior": actual,
+            "cantidad_final": final,
+            "modo": modo,
         }
-        if quant_id is None:
-            quant_id = odoo.execute(
-                "stock.quant",
-                "create",
-                {
-                    "product_id": producto_id,
-                    "location_id": ubicacion_id,
-                    **valores_quant,
-                },
-            )
-        else:
-            odoo.execute("stock.quant", "write", [quant_id], valores_quant)
-
-        odoo.execute("stock.quant", "action_apply_inventory", [quant_id])
-
-    except InventarioError as e:
-        state_store.marcar_estado(ENTIDAD, ajuste_id, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "ajustar", "ERROR", ajuste_id, str(e))
-        raise
-    except OdooExecutionError as e:
-        state_store.marcar_estado(ENTIDAD, ajuste_id, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "ajustar", "ERROR", ajuste_id, str(e))
-        raise InventarioError(f"Error de Odoo al ajustar stock: {e}") from e
-
-    state_store.registrar_mapeo(
-        ENTIDAD, ajuste_id,
-        model_odoo="stock.quant", id_odoo=quant_id,
-        estado=EstadoSync.PROCESADO,
-    )
-    state_store.log(
-        ENTIDAD, "ajustar", "OK", ajuste_id,
-        f"producto={producto_id} ubicacion={ubicacion_id} {actual} -> {final} "
-        f"(modo={modo}). Motivo: {registro.get('motivo', '')}",
-    )
-    logger.info(
-        "STOCK_AJUSTE | ajuste=%s producto=%s %s->%s modo=%s",
-        ajuste_id, producto_id, actual, final, modo,
-    )
-
-    return {
-        "ajuste_id": ajuste_id,
-        "aplicado": True,
-        "idempotente": False,
-        "quant_id": quant_id,
-        "producto_id_odoo": producto_id,
-        "ubicacion_id_odoo": ubicacion_id,
-        "cantidad_anterior": actual,
-        "cantidad_final": final,
-        "modo": modo,
-    }
 
 
 def consultar_stock(registro: dict, odoo: OdooUniversalAPI) -> dict:

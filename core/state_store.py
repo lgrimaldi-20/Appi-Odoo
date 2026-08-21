@@ -156,9 +156,15 @@ def marcar_estado(
         if mapa is None:
             raise KeyError(f"No existe mapeo para {entidad}/{id_origen}")
         mapa.estado = estado.value
-        # Se conserva el mensaje para estados que llevan detalle (ERROR, ELIMINADO);
-        # en el resto se limpia.
-        mapa.error = error if estado in (EstadoSync.ERROR, EstadoSync.ELIMINADO) else None
+        # Si se pasa un mensaje explicito se conserva, sea cual sea el estado:
+        # una fila devuelta a PENDIENTE por un corte de red lleva el aviso de
+        # que su id_odoo pudo quedar creado en Odoo, y perderlo dejaria al
+        # operador sin la unica pista del registro huerfano.
+        # Sin mensaje, solo los estados que llevan detalle propio lo mantienen.
+        if error is not None:
+            mapa.error = error
+        elif estado not in (EstadoSync.ERROR, EstadoSync.ELIMINADO):
+            mapa.error = None
 
 
 def ya_procesado(entidad: str, id_origen: str) -> Optional[int]:
@@ -302,6 +308,39 @@ def reservar_estricto(
             return None
     except IntegrityError as e:
         raise ReservaOcupada(entidad, id_origen) from e
+
+
+@contextmanager
+def reserva_liberada_si_cae_odoo(entidad: str, id_origen: str):
+    """
+    Libera la reserva (PROCESANDO -> PENDIENTE) si dentro del bloque se pierde
+    la conexion con Odoo.
+
+    Sin esto la fila se queda en PROCESANDO para siempre y reservar() la rechaza
+    en cada intento posterior: un fallo transitorio de red se convierte en un
+    BLOQUEO PERMANENTE. Se conserva el id_odoo que hubiera, porque el registro
+    pudo quedar creado en Odoo (no participa en nuestra transaccion) y el
+    reintento debe poder adoptarlo en vez de duplicarlo.
+
+    Solo actua ante OdooConnectionError: un fallo de DATOS debe quedarse en
+    ERROR, que es un estado final legitimo del que se sale corrigiendo el dato.
+    """
+    # Import local: odoo_universal no debe ser dependencia dura del state store.
+    from odoo_universal import OdooConnectionError
+
+    try:
+        yield
+    except OdooConnectionError as e:
+        mapa = buscar_mapeo(entidad, id_origen)
+        detalle = f"Conexion con Odoo perdida: {e}"
+        if mapa is not None and mapa.id_odoo:
+            detalle += (
+                f" | El registro id_odoo={mapa.id_odoo} PUEDE haber quedado "
+                f"creado en Odoo; el reintento lo adoptara."
+            )
+        marcar_estado(entidad, id_origen, EstadoSync.PENDIENTE, error=detalle)
+        log(entidad, "conexion", "ERROR", id_origen, detalle)
+        raise
 
 
 # ---------------------------------------------------------------------------

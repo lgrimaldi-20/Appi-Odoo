@@ -271,3 +271,70 @@ class TestFalloDeConexionTrasCrear:
         sincronizador.sincronizar_entidad("factura", self._registro("NET-REPOST"), odoo)
 
         assert posts == [], "reposteo un asiento ya posteado -> error de Odoo"
+
+
+class TestLiberacionEnTodosLosModulos:
+    """
+    El mismo hueco existia en los cuatro modulos que escriben en Odoo: si la
+    conexion cae, la reserva se quedaba en PROCESANDO y reservar()/
+    reservar_estricto() la rechazaban en cada intento posterior, convirtiendo un
+    fallo transitorio de red en un BLOQUEO PERMANENTE.
+    """
+
+    def _entorno(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'c.db'}")
+        import core.state_store as state_store
+        importlib.reload(state_store)
+        state_store.init_db()
+        return state_store
+
+    def test_el_helper_deja_la_fila_reintentable(self, tmp_path, monkeypatch):
+        from odoo_universal import OdooConnectionError
+        state_store = self._entorno(tmp_path, monkeypatch)
+
+        state_store.reservar_estricto("ajuste_stock", "A-1", model_odoo="stock.quant")
+        with pytest.raises(OdooConnectionError):
+            with state_store.reserva_liberada_si_cae_odoo("ajuste_stock", "A-1"):
+                raise OdooConnectionError("red caida")
+
+        mapa = state_store.buscar_mapeo("ajuste_stock", "A-1")
+        assert mapa.estado == state_store.EstadoSync.PENDIENTE.value
+        # Y se puede volver a reservar: no quedo bloqueada.
+        assert state_store.reservar_estricto("ajuste_stock", "A-1") is None
+
+    def test_conserva_el_id_odoo_para_poder_adoptarlo(self, tmp_path, monkeypatch):
+        """El registro pudo quedar creado en Odoo: hay que no perderle la pista."""
+        from odoo_universal import OdooConnectionError
+        state_store = self._entorno(tmp_path, monkeypatch)
+
+        state_store.reservar_estricto("asiento", "AS-1", model_odoo="account.move")
+        state_store.registrar_mapeo(
+            "asiento", "AS-1", id_odoo=321,
+            estado=state_store.EstadoSync.PROCESANDO,
+        )
+        with pytest.raises(OdooConnectionError):
+            with state_store.reserva_liberada_si_cae_odoo("asiento", "AS-1"):
+                raise OdooConnectionError("red caida tras crear")
+
+        mapa = state_store.buscar_mapeo("asiento", "AS-1")
+        assert mapa.id_odoo == 321, "se pierde el rastro del registro huerfano"
+        assert "321" in (mapa.error or ""), "el aviso no menciona el id huerfano"
+
+    def test_un_fallo_de_datos_NO_libera_la_reserva(self, tmp_path, monkeypatch):
+        """
+        Solo la caida de Odoo libera. Un error de datos debe poder terminar en
+        ERROR, que es un estado final legitimo: se sale corrigiendo el dato, no
+        reintentando.
+        """
+        from core.sincronizador import SincronizacionError
+        state_store = self._entorno(tmp_path, monkeypatch)
+
+        state_store.reservar_estricto("conciliacion", "C-1")
+        with pytest.raises(SincronizacionError):
+            with state_store.reserva_liberada_si_cae_odoo("conciliacion", "C-1"):
+                raise SincronizacionError("dato invalido")
+
+        mapa = state_store.buscar_mapeo("conciliacion", "C-1")
+        assert mapa.estado == state_store.EstadoSync.PROCESANDO.value, (
+            "un fallo de datos no debe tocar el estado de la reserva"
+        )

@@ -189,68 +189,71 @@ def crear_asiento(registro: dict, odoo: OdooUniversalAPI) -> dict:
 
     postear = registro.get("postear", True)
 
-    # 2 y 3. Resolver diario/cuentas y validar cuadre (antes de tocar Odoo).
-    try:
-        journal_id = _resolver_diario(odoo, registro.get("diario_codigo"))
-        line_ids = _construir_lineas(odoo, registro.get("lineas") or [])
-    except AsientoError as e:
-        state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "validar", "ERROR", asiento_id, str(e))
-        raise
-    except OdooExecutionError as e:
-        state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "validar", "ERROR", asiento_id, str(e))
-        raise AsientoError(f"Error de Odoo al resolver cuentas/diario: {e}") from e
-
-    valores = {
-        "move_type": "entry",
-        "journal_id": journal_id,
-        "ref": registro.get("referencia") or registro.get("ref") or "",
-        "line_ids": line_ids,
-    }
-    if registro.get("fecha"):
-        valores["date"] = registro["fecha"]
-
-    # 4. CREATE.
-    try:
-        id_odoo = odoo.execute(MODEL, "create", valores)
-        state_store.registrar_mapeo(
-            ENTIDAD, asiento_id, model_odoo=MODEL, id_odoo=id_odoo,
-            estado=EstadoSync.PROCESANDO,
-        )
-        state_store.log(ENTIDAD, "crear", "OK", asiento_id, f"id_odoo={id_odoo}")
-    except OdooExecutionError as e:
-        state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "crear", "ERROR", asiento_id, str(e))
-        raise AsientoError(f"Error al crear el asiento en Odoo: {e}") from e
-
-    # 5. POST (opcional).
-    if postear:
+    # A partir de aqui se habla con Odoo. Un corte de conexion debe LIBERAR la
+    # reserva: en PROCESANDO, reservar_estricto la rechazaria para siempre.
+    with state_store.reserva_liberada_si_cae_odoo(ENTIDAD, asiento_id):
+        # 2 y 3. Resolver diario/cuentas y validar cuadre (antes de tocar Odoo).
         try:
-            odoo.execute(MODEL, "action_post", [id_odoo])
-            state_store.log(ENTIDAD, "postear", "OK", asiento_id, f"id_odoo={id_odoo}")
+            journal_id = _resolver_diario(odoo, registro.get("diario_codigo"))
+            line_ids = _construir_lineas(odoo, registro.get("lineas") or [])
+        except AsientoError as e:
+            state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.ERROR, error=str(e))
+            state_store.log(ENTIDAD, "validar", "ERROR", asiento_id, str(e))
+            raise
         except OdooExecutionError as e:
-            state_store.marcar_estado(
-                ENTIDAD, asiento_id, EstadoSync.ERROR,
-                error=f"Creado (id_odoo={id_odoo}) pero fallo action_post: {e}",
-            )
-            state_store.log(ENTIDAD, "postear", "ERROR", asiento_id, str(e))
-            raise AsientoError(
-                f"Asiento creado en Odoo (id={id_odoo}) pero fallo al postear: {e}"
-            ) from e
+            state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.ERROR, error=str(e))
+            state_store.log(ENTIDAD, "validar", "ERROR", asiento_id, str(e))
+            raise AsientoError(f"Error de Odoo al resolver cuentas/diario: {e}") from e
 
-    state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.PROCESADO)
-    logger.info(
-        "ASIENTO_OK | asiento=%s id_odoo=%s posteado=%s lineas=%d",
-        asiento_id, id_odoo, postear, len(line_ids),
-    )
-    return {
-        "asiento_id": asiento_id,
-        "id_odoo": id_odoo,
-        "estado": EstadoSync.PROCESADO.value,
-        "posteado": bool(postear),
-        "idempotente": False,
-    }
+        valores = {
+            "move_type": "entry",
+            "journal_id": journal_id,
+            "ref": registro.get("referencia") or registro.get("ref") or "",
+            "line_ids": line_ids,
+        }
+        if registro.get("fecha"):
+            valores["date"] = registro["fecha"]
+
+        # 4. CREATE.
+        try:
+            id_odoo = odoo.execute(MODEL, "create", valores)
+            state_store.registrar_mapeo(
+                ENTIDAD, asiento_id, model_odoo=MODEL, id_odoo=id_odoo,
+                estado=EstadoSync.PROCESANDO,
+            )
+            state_store.log(ENTIDAD, "crear", "OK", asiento_id, f"id_odoo={id_odoo}")
+        except OdooExecutionError as e:
+            state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.ERROR, error=str(e))
+            state_store.log(ENTIDAD, "crear", "ERROR", asiento_id, str(e))
+            raise AsientoError(f"Error al crear el asiento en Odoo: {e}") from e
+
+        # 5. POST (opcional).
+        if postear:
+            try:
+                odoo.execute(MODEL, "action_post", [id_odoo])
+                state_store.log(ENTIDAD, "postear", "OK", asiento_id, f"id_odoo={id_odoo}")
+            except OdooExecutionError as e:
+                state_store.marcar_estado(
+                    ENTIDAD, asiento_id, EstadoSync.ERROR,
+                    error=f"Creado (id_odoo={id_odoo}) pero fallo action_post: {e}",
+                )
+                state_store.log(ENTIDAD, "postear", "ERROR", asiento_id, str(e))
+                raise AsientoError(
+                    f"Asiento creado en Odoo (id={id_odoo}) pero fallo al postear: {e}"
+                ) from e
+
+        state_store.marcar_estado(ENTIDAD, asiento_id, EstadoSync.PROCESADO)
+        logger.info(
+            "ASIENTO_OK | asiento=%s id_odoo=%s posteado=%s lineas=%d",
+            asiento_id, id_odoo, postear, len(line_ids),
+        )
+        return {
+            "asiento_id": asiento_id,
+            "id_odoo": id_odoo,
+            "estado": EstadoSync.PROCESADO.value,
+            "posteado": bool(postear),
+            "idempotente": False,
+        }
 
 
 def eliminar_asiento(

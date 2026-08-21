@@ -102,84 +102,87 @@ def conciliar(
         state_store.log(ENTIDAD, "idempotente", "OK", clave, "Ya conciliado")
         return {"conciliado": True, "idempotente": True, "clave": clave}
 
-    # 1. Se busca el asiento del pago. Si no lo tiene (Odoo 19, pago
-    # "in_process"), no hay apuntes que cruzar -> mecanismo B.
-    try:
-        pago_move_id = _move_id_de_pago(odoo, pago_id_odoo)
-    except OdooExecutionError as e:
-        state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "leer_pago", "ERROR", clave, str(e))
-        raise ConciliacionError(f"Error al leer el pago: {e}") from e
-
-    if pago_move_id is None:
-        # --- Mecanismo B: asistente nativo (Odoo 19 sin asiento de pago) ---
+    # A partir de aqui se habla con Odoo. Un corte de conexion debe LIBERAR la
+    # reserva: en PROCESANDO, reservar_estricto la rechazaria para siempre.
+    with state_store.reserva_liberada_si_cae_odoo(ENTIDAD, clave):
+        # 1. Se busca el asiento del pago. Si no lo tiene (Odoo 19, pago
+        # "in_process"), no hay apuntes que cruzar -> mecanismo B.
         try:
-            factura = _vincular_pago_existente(odoo, factura_id_odoo, pago_id_odoo)
+            pago_move_id = _move_id_de_pago(odoo, pago_id_odoo)
         except OdooExecutionError as e:
             state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=str(e))
-            state_store.log(ENTIDAD, "vincular_pago", "ERROR", clave, str(e))
-            raise ConciliacionError(f"Error al vincular el pago con la factura: {e}") from e
+            state_store.log(ENTIDAD, "leer_pago", "ERROR", clave, str(e))
+            raise ConciliacionError(f"Error al leer el pago: {e}") from e
 
-        estado_pago = factura.get("payment_state")
-        if estado_pago not in ("in_payment", "paid", "partial"):
+        if pago_move_id is None:
+            # --- Mecanismo B: asistente nativo (Odoo 19 sin asiento de pago) ---
+            try:
+                factura = _vincular_pago_existente(odoo, factura_id_odoo, pago_id_odoo)
+            except OdooExecutionError as e:
+                state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=str(e))
+                state_store.log(ENTIDAD, "vincular_pago", "ERROR", clave, str(e))
+                raise ConciliacionError(f"Error al vincular el pago con la factura: {e}") from e
+
+            estado_pago = factura.get("payment_state")
+            if estado_pago not in ("in_payment", "paid", "partial"):
+                msg = (
+                    f"No se pudo vincular el pago {pago_id_odoo}: la factura quedo "
+                    f"en payment_state={estado_pago!r}."
+                )
+                state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=msg)
+                state_store.log(ENTIDAD, "vincular_pago", "ERROR", clave, msg)
+                raise ConciliacionError(msg)
+
+            state_store.marcar_estado(ENTIDAD, clave, EstadoSync.PROCESADO)
+            state_store.log(
+                ENTIDAD, "vincular_pago", "OK", clave, f"payment_state={estado_pago}"
+            )
+            return {
+                "conciliado": True,
+                "idempotente": False,
+                "clave": clave,
+                "mecanismo": "vinculo_pago",
+                "payment_state": estado_pago,
+                "residual": factura.get("amount_residual"),
+            }
+
+        # --- Mecanismo A: conciliacion por apuntes (Odoo 17/18) ---
+        try:
+            lineas_factura = _lineas_conciliables(odoo, factura_id_odoo)
+            lineas_pago = _lineas_conciliables(odoo, pago_move_id)
+        except OdooExecutionError as e:
+            state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=str(e))
+            state_store.log(ENTIDAD, "buscar_lineas", "ERROR", clave, str(e))
+            raise ConciliacionError(f"Error al buscar apuntes: {e}") from e
+
+        if not lineas_factura or not lineas_pago:
             msg = (
-                f"No se pudo vincular el pago {pago_id_odoo}: la factura quedo "
-                f"en payment_state={estado_pago!r}."
+                f"Sin apuntes conciliables (factura={len(lineas_factura)}, "
+                f"pago={len(lineas_pago)}). Verifica que ambos esten posteados."
             )
             state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=msg)
-            state_store.log(ENTIDAD, "vincular_pago", "ERROR", clave, msg)
+            state_store.log(ENTIDAD, "buscar_lineas", "ERROR", clave, msg)
             raise ConciliacionError(msg)
 
+        line_ids = [l["id"] for l in lineas_factura] + [l["id"] for l in lineas_pago]
+
+        # reconcile() sobre el conjunto de apuntes.
+        try:
+            odoo.execute("account.move.line", "reconcile", line_ids)
+        except OdooExecutionError as e:
+            state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=str(e))
+            state_store.log(ENTIDAD, "reconcile", "ERROR", clave, str(e))
+            raise ConciliacionError(f"Error al conciliar: {e}") from e
+
         state_store.marcar_estado(ENTIDAD, clave, EstadoSync.PROCESADO)
-        state_store.log(
-            ENTIDAD, "vincular_pago", "OK", clave, f"payment_state={estado_pago}"
-        )
+        state_store.log(ENTIDAD, "reconcile", "OK", clave, f"apuntes={line_ids}")
         return {
             "conciliado": True,
             "idempotente": False,
             "clave": clave,
-            "mecanismo": "vinculo_pago",
-            "payment_state": estado_pago,
-            "residual": factura.get("amount_residual"),
+            "mecanismo": "apuntes",
+            "apuntes": line_ids,
         }
-
-    # --- Mecanismo A: conciliacion por apuntes (Odoo 17/18) ---
-    try:
-        lineas_factura = _lineas_conciliables(odoo, factura_id_odoo)
-        lineas_pago = _lineas_conciliables(odoo, pago_move_id)
-    except OdooExecutionError as e:
-        state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "buscar_lineas", "ERROR", clave, str(e))
-        raise ConciliacionError(f"Error al buscar apuntes: {e}") from e
-
-    if not lineas_factura or not lineas_pago:
-        msg = (
-            f"Sin apuntes conciliables (factura={len(lineas_factura)}, "
-            f"pago={len(lineas_pago)}). Verifica que ambos esten posteados."
-        )
-        state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=msg)
-        state_store.log(ENTIDAD, "buscar_lineas", "ERROR", clave, msg)
-        raise ConciliacionError(msg)
-
-    line_ids = [l["id"] for l in lineas_factura] + [l["id"] for l in lineas_pago]
-
-    # reconcile() sobre el conjunto de apuntes.
-    try:
-        odoo.execute("account.move.line", "reconcile", line_ids)
-    except OdooExecutionError as e:
-        state_store.marcar_estado(ENTIDAD, clave, EstadoSync.ERROR, error=str(e))
-        state_store.log(ENTIDAD, "reconcile", "ERROR", clave, str(e))
-        raise ConciliacionError(f"Error al conciliar: {e}") from e
-
-    state_store.marcar_estado(ENTIDAD, clave, EstadoSync.PROCESADO)
-    state_store.log(ENTIDAD, "reconcile", "OK", clave, f"apuntes={line_ids}")
-    return {
-        "conciliado": True,
-        "idempotente": False,
-        "clave": clave,
-        "mecanismo": "apuntes",
-        "apuntes": line_ids,
-    }
 
 
 def _vincular_pago_existente(
