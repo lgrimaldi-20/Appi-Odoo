@@ -21,6 +21,7 @@ from core.conciliacion import ConciliacionError, conciliar
 from core.facturacion import crear_factura
 from core.inventario import ajustar_stock
 from core.pagos import crear_pago
+from core.ingesta_smartier import IngestaError, ingerir_notas_entrega
 from core.poller import procesar_lote
 from core.rollback import cancelar_factura
 from core.sincronizador import SincronizacionError
@@ -94,6 +95,26 @@ def poller_task(self, tenant: str = "default", limite: int = 50) -> dict:
     fallos de datos por fila no abortan la pasada (quedan ERROR en la cola).
     """
     resultado = procesar_lote(tenant=tenant, limite=limite)
+    return asdict(resultado)
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(IngestaError,),
+    retry_backoff=_BACKOFF_BASE,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=_REINTENTOS_MAX,
+)
+def ingesta_smartier_task(self, limite: int = 200) -> dict:
+    """
+    Pasada de INGESTA: lee notas de entrega de Smartier y las encola.
+
+    Es la mitad izquierda del flujo (Smartier -> cola); el poller se encarga
+    despues de llevar la cola a Odoo. Reintenta con espera creciente si la API
+    de Smartier falla (red, 429 agotado o 5xx).
+    """
+    resultado = ingerir_notas_entrega(limite=limite)
     return asdict(resultado)
 
 

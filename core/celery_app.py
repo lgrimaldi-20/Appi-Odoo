@@ -56,6 +56,20 @@ if os.getenv("SOURCE_DATABASE_URL"):
         }
     }
 
+# Ingesta periodica desde Smartier hacia la cola (mitad izquierda del flujo).
+# Solo se programa si hay configuracion de Smartier; intervalo propio, porque
+# leer la API externa suele espaciarse mas que vaciar la cola hacia Odoo.
+if os.getenv("SMARTIER_BASE_URL") and os.getenv("SMARTIER_API_KEY"):
+    _INGESTA_INTERVALO = float(os.getenv("SMARTIER_INTERVALO_SEG", "300"))
+    _INGESTA_LIMITE = int(os.getenv("SMARTIER_LIMITE", "200"))
+    schedule = dict(getattr(celery_app.conf, "beat_schedule", None) or {})
+    schedule["ingesta-smartier"] = {
+        "task": "core.tasks.ingesta_smartier_task",
+        "schedule": _INGESTA_INTERVALO,
+        "kwargs": {"limite": _INGESTA_LIMITE},
+    }
+    celery_app.conf.beat_schedule = schedule
+
 
 
 def en_modo_eager() -> bool:
