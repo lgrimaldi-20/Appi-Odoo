@@ -37,3 +37,6 @@ API-Odoo-Helpdesk-Sestia/
 
 # Documentos personales ajenos al proyecto
 resume/
+
+# Entregables generados (se reproducen con scripts/generar_preguntas_smartier.py)
+Preguntas-Smartier-Reunion.docx
