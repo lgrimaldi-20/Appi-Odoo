@@ -37,3 +37,8 @@ API-Odoo-Helpdesk-Sestia/
 
 # Documentos personales ajenos al proyecto
 resume/
+
+# Documentos de trabajo (informes, actas de reunion): son del usuario, no del repo.
+*.docx
+*.xlsx
+!docs/**/*.xlsx
