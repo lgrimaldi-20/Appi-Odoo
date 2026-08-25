@@ -53,7 +53,7 @@ def mock_sync_ok(monkeypatch):
     crear_factura/crear_pago devuelven un resultado exitoso.
     Se parchea en el punto de uso (los routers llaman a estas funciones).
     """
-    monkeypatch.setattr(r_facturas, "crear_factura", lambda reg, odoo: _resultado_ok(reg))
+    monkeypatch.setattr(r_facturas, "crear_factura", lambda reg, odoo, entidad="factura": _resultado_ok(reg))
     monkeypatch.setattr(r_pagos, "crear_pago", lambda reg, odoo: _resultado_ok(reg))
 
 
@@ -70,7 +70,7 @@ class TestFacturas:
         assert data["idempotente"] is False
 
     def test_factura_error_negocio_devuelve_422(self, monkeypatch):
-        def falla(reg, odoo):
+        def falla(reg, odoo, entidad="factura"):
             raise SincronizacionError("cliente no existe")
         monkeypatch.setattr(r_facturas, "crear_factura", falla)
 
@@ -90,7 +90,7 @@ class TestFacturas:
         fake_task = type("T", (), {"id": "task-123"})()
         monkeypatch.setattr(
             r_facturas.sincronizar_factura_task, "delay",
-            lambda registro, tenant: fake_task,
+            lambda registro, tenant, tipo="factura": fake_task,
         )
         r = client.post("/facturas", json={"registro": {"fid": "F-A"}, "async": True})
         assert r.status_code == 200
@@ -109,7 +109,7 @@ class TestPagos:
         assert r.json()["id_odoo"] == 555
 
     def test_pago_error_negocio_devuelve_422(self, monkeypatch):
-        def falla(reg, odoo):
+        def falla(reg, odoo, entidad="factura"):
             raise SincronizacionError("diario no encontrado")
         monkeypatch.setattr(r_pagos, "crear_pago", falla)
 

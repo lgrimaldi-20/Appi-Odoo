@@ -41,10 +41,17 @@ _BACKOFF_BASE = 2  # segundos: 2, 4, 8, 16, 32...
     retry_jitter=True,
     max_retries=_REINTENTOS_MAX,
 )
-def sincronizar_factura_task(self, registro: dict, tenant: str = "default") -> dict:
-    """Crea+postea una factura en background. Reintenta si Odoo esta caido."""
+def sincronizar_factura_task(
+    self, registro: dict, tenant: str = "default", tipo: str = "factura"
+) -> dict:
+    """
+    Crea+postea un documento en background. Reintenta si Odoo esta caido.
+
+    `tipo` elige el tipo de documento (factura, nota_credito...); por defecto
+    factura de venta, para no romper tareas encoladas por versiones anteriores.
+    """
     odoo = get_tenant(tenant)
-    resultado = crear_factura(registro, odoo)
+    resultado = crear_factura(registro, odoo, entidad=tipo)
     return asdict(resultado)
 
 

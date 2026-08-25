@@ -48,6 +48,98 @@ factura:
       buscar_por: name
       obligatorio: false
 
+# -----------------------------------------------------------------------------
+# Los cuatro tipos de documento de account.move se declaran como entidades
+# SEPARADAS, no como un campo "tipo" dentro del registro.
+#
+# El motivo es de seguridad contable: move_type decide el SIGNO del apunte. Si
+# el tipo viajara como un dato mas y llegara vacio o mal escrito, se aplicaria
+# el defecto (out_invoice) y una devolucion se registraria como una venta: el
+# cliente quedaria DEBIENDO el importe en vez de que se le abone, sin ningun
+# error visible. Como entidad, un nombre equivocado se rechaza con
+# "sin mapeo definido" en vez de contabilizar lo contrario de lo pedido.
+#
+#   factura            -> out_invoice  factura de cliente        (venta)
+#   nota_credito       -> out_refund   devolucion a cliente      (abono)
+#   factura_proveedor  -> in_invoice   factura de proveedor      (compra)
+#   nota_debito        -> in_refund    devolucion a proveedor
+#
+# "factura" se mantiene como venta para no romper las integraciones que ya
+# existen: quien no declare tipo sigue emitiendo facturas de cliente.
+# -----------------------------------------------------------------------------
+
+nota_credito:
+  model: account.move
+  id_origen: factura_id
+  validar_total: total
+  defaults:
+    move_type: out_refund           # nota de credito (devolucion de venta)
+  campos:
+    fecha: invoice_date
+    referencia: ref
+    # Lineas: el origen las envia ya en formato de comando Odoo
+    # (p.ej. [(0, 0, {"product_id": X, "quantity": N, "price_unit": P})]).
+    lineas: invoice_line_ids
+  resolver:
+    partner_id:
+      desde: cliente_nif
+      model: res.partner
+      buscar_por: vat
+      obligatorio: true
+    currency_id:
+      desde: moneda_iso
+      model: res.currency
+      buscar_por: name
+      obligatorio: false
+
+factura_proveedor:
+  model: account.move
+  id_origen: factura_id
+  validar_total: total
+  defaults:
+    move_type: in_invoice           # factura de proveedor (compra)
+  campos:
+    fecha: invoice_date
+    referencia: ref
+    # Lineas: el origen las envia ya en formato de comando Odoo
+    # (p.ej. [(0, 0, {"product_id": X, "quantity": N, "price_unit": P})]).
+    lineas: invoice_line_ids
+  resolver:
+    partner_id:
+      desde: proveedor_nif
+      model: res.partner
+      buscar_por: vat
+      obligatorio: true
+    currency_id:
+      desde: moneda_iso
+      model: res.currency
+      buscar_por: name
+      obligatorio: false
+
+nota_debito:
+  model: account.move
+  id_origen: factura_id
+  validar_total: total
+  defaults:
+    move_type: in_refund            # devolucion a proveedor
+  campos:
+    fecha: invoice_date
+    referencia: ref
+    # Lineas: el origen las envia ya en formato de comando Odoo
+    # (p.ej. [(0, 0, {"product_id": X, "quantity": N, "price_unit": P})]).
+    lineas: invoice_line_ids
+  resolver:
+    partner_id:
+      desde: proveedor_nif
+      model: res.partner
+      buscar_por: vat
+      obligatorio: true
+    currency_id:
+      desde: moneda_iso
+      model: res.currency
+      buscar_por: name
+      obligatorio: false
+
 pago:
   model: account.payment
   id_origen: pago_id

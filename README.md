@@ -66,6 +66,15 @@ state store (idempotencia) -> mapper (traduce) -> create + action_post (Odoo)
   bitacora completa en la base de datos de control.
 
 ```bash
+# Tipos de documento: el campo "tipo" elige el move_type en Odoo.
+#   factura            -> out_invoice  venta (por defecto)
+#   nota_credito       -> out_refund   devolucion a cliente (abono)
+#   factura_proveedor  -> in_invoice   compra
+#   nota_debito        -> in_refund    devolucion a proveedor
+# Los de compra identifican al tercero por "proveedor_nif" en vez de
+# "cliente_nif". Un tipo desconocido se RECHAZA (no cae a factura de venta:
+# eso invertiria el signo contable sin avisar).
+
 # Crear + postear una factura (idempotente)
 curl -X POST http://localhost:8000/facturas \
   -H "X-Api-Key: tu-clave" \

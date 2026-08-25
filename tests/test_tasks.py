@@ -58,7 +58,7 @@ class TestProcesarVentaExitoso:
 
 class TestRollback:
     def test_rollback_si_falla_el_pago(self, tasks, monkeypatch):
-        monkeypatch.setattr(tasks, "crear_factura", lambda reg, odoo: _res("F-2", 11))
+        monkeypatch.setattr(tasks, "crear_factura", lambda reg, odoo, entidad="factura": _res("F-2", 11))
 
         def pago_falla(reg, odoo):
             raise SincronizacionError("cliente del pago no existe")
@@ -75,7 +75,7 @@ class TestRollback:
         assert cancel.call_args.args[0] == 11
 
     def test_rollback_si_falla_la_conciliacion(self, tasks, monkeypatch):
-        monkeypatch.setattr(tasks, "crear_factura", lambda reg, odoo: _res("F-3", 12))
+        monkeypatch.setattr(tasks, "crear_factura", lambda reg, odoo, entidad="factura": _res("F-3", 12))
         monkeypatch.setattr(tasks, "crear_pago", lambda reg, odoo: _res("P-3", 22))
 
         def conc_falla(*a, **k):
@@ -97,7 +97,7 @@ class TestRollback:
 
 class TestTareasSimples:
     def test_sincronizar_factura_task_devuelve_dict(self, tasks, monkeypatch):
-        monkeypatch.setattr(tasks, "crear_factura", lambda reg, odoo: _res("F-9", 99))
+        monkeypatch.setattr(tasks, "crear_factura", lambda reg, odoo, entidad="factura": _res("F-9", 99))
         res = tasks.sincronizar_factura_task.apply(args=[{"f": 1}]).get()
         assert res["id_odoo"] == 99
         assert res["estado"] == "PROCESADO"

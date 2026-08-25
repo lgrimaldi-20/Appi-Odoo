@@ -23,8 +23,19 @@ router = APIRouter(tags=["Facturacion"], dependencies=[Depends(verify_api_key)])
 
 
 class FacturaRequest(BaseModel):
-    """Registro de factura de la base de datos de origen."""
-    registro: dict = Field(..., description="Datos crudos de la factura de origen.")
+    """Registro de documento (factura, abono...) de la base de datos de origen."""
+    registro: dict = Field(..., description="Datos crudos del documento de origen.")
+    # Tipo de documento. Decide el move_type en Odoo y, con el, el SIGNO del
+    # apunte contable: una devolucion enviada como "factura" dejaria al cliente
+    # debiendo el importe en vez de abonarselo.
+    tipo: str = Field(
+        "factura",
+        description=(
+            "Tipo de documento: factura (venta) | nota_credito (devolucion a "
+            "cliente) | factura_proveedor (compra) | nota_debito (devolucion a "
+            "proveedor). Por defecto, factura."
+        ),
+    )
     tenant: str = "default"
     # Si es True, encola en background y devuelve 202 en vez de procesar inline.
     procesar_async: bool = Field(False, alias="async")
@@ -47,11 +58,11 @@ def sincronizar_factura(req: FacturaRequest):
     odoo: OdooUniversalAPI = resolver_tenant(req.tenant)
 
     if req.procesar_async:
-        task = sincronizar_factura_task.delay(req.registro, req.tenant)
+        task = sincronizar_factura_task.delay(req.registro, req.tenant, req.tipo)
         return {"encolado": True, "task_id": task.id, "tenant": req.tenant}
 
     try:
-        resultado = crear_factura(req.registro, odoo)
+        resultado = crear_factura(req.registro, odoo, entidad=req.tipo)
     except ReservaOcupada as e:
         # Otra peticion con el mismo id_origen esta procesando ahora mismo.
         # 409 (y no 500): el cliente puede reintentar en unos segundos.
