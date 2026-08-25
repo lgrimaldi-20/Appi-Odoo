@@ -1,0 +1,32 @@
+# Normalizacion de finales de linea.
+#
+# El repositorio se trabaja desde Windows (Git con core.autocrlf=true, que
+# escribe CRLF en disco) y desde WSL (autocrlf=false, que lee esos CRLF como
+# modificaciones). Sin este fichero, cambiar de rama en WSL falla con
+# "Your local changes would be overwritten" aunque no haya ningun cambio real.
+#
+# Con estas reglas el contenido se guarda SIEMPRE con LF en el repositorio y
+# cada plataforma decide como lo escribe en su copia de trabajo.
+
+# Por defecto: normaliza a LF en el repositorio los ficheros de texto.
+* text=auto eol=lf
+
+# Scripts que deben conservar LF si o si (los rompe el CRLF).
+*.sh text eol=lf
+
+# Ficheros de Windows que deben conservar CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binarios: git no debe tocarlos nunca.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.xlsx binary
+*.xls binary
+*.docx binary
+*.db binary
+*.pyc binary
