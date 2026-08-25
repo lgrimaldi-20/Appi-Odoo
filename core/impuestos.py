@@ -43,9 +43,15 @@ def verificar_total(
     factura_id_odoo: int,
     odoo: OdooUniversalAPI,
     tolerancia: Decimal = TOLERANCIA,
+    model_odoo: str = "account.move",
+    campo_odoo: str = "amount_total",
 ) -> dict:
     """
-    Lee amount_total de la factura en Odoo y lo compara con el total de origen.
+    Lee el importe calculado por Odoo y lo compara con el total de origen.
+
+    model_odoo/campo_odoo permiten validar otras entidades: account.move guarda
+    el importe en amount_total, pero account.payment NO tiene ese campo — usa
+    `amount`. Se parametriza en vez de asumir la factura.
 
     Devuelve un dict con ambos totales y la diferencia si cuadran.
     Lanza DescuadreError si la diferencia supera la tolerancia.
@@ -53,12 +59,12 @@ def verificar_total(
     esperado = _a_decimal(total_origen)
 
     datos = odoo.execute(
-        "account.move", "read", [factura_id_odoo], fields=["amount_total"]
+        model_odoo, "read", [factura_id_odoo], fields=[campo_odoo]
     )
     if not datos:
         raise DescuadreError(esperado, None, None)
 
-    real = _a_decimal(datos[0].get("amount_total", 0))
+    real = _a_decimal(datos[0].get(campo_odoo, 0))
     diferencia = abs(esperado - real)
 
     if diferencia > tolerancia:

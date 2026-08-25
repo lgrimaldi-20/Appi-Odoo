@@ -143,6 +143,12 @@ nota_debito:
 pago:
   model: account.payment
   id_origen: pago_id
+  # Se valida que el importe que Odoo registro coincida con el de origen: un
+  # cobro por un importe equivocado se conciliaria contra la factura dejando un
+  # residual erroneo, sin ningun error visible.
+  validar_total: monto
+  # account.payment NO tiene amount_total (eso es de account.move): usa amount.
+  campo_total_odoo: amount
   defaults:
     payment_type: inbound           # ingreso (cobro de cliente)
     # Odoo 19 exige partner_type explicito para resolver la cuenta contrapartida

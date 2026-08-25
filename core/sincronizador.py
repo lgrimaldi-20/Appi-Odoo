@@ -229,7 +229,13 @@ def _postear_y_validar(
     campo_total = conf.get("validar_total")
     if campo_total and registro.get(campo_total) is not None:
         try:
-            impuestos.verificar_total(registro[campo_total], id_odoo, odoo)
+            # campo_total_odoo: donde guarda Odoo el importe de ESTA entidad.
+            # account.move usa amount_total; account.payment, amount.
+            impuestos.verificar_total(
+                registro[campo_total], id_odoo, odoo,
+                model_odoo=model_odoo,
+                campo_odoo=conf.get("campo_total_odoo", "amount_total"),
+            )
             state_store.log(entidad, "validar_total", "OK", id_origen, f"id_odoo={id_odoo}")
         except impuestos.DescuadreError as e:
             state_store.marcar_estado(

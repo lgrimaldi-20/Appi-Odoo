@@ -75,6 +75,14 @@ state store (idempotencia) -> mapper (traduce) -> create + action_post (Odoo)
 # "cliente_nif". Un tipo desconocido se RECHAZA (no cae a factura de venta:
 # eso invertiria el signo contable sin avisar).
 
+# Impuestos: se envian por NOMBRE, no por id de Odoo (los ids son internos y
+# cambian entre instancias). El middleware los resuelve filtrando por el uso
+# que toca (venta/compra), porque el mismo nombre suele existir para ambos:
+#   "lineas": [[0, 0, {"product_id": 2, "quantity": 4, "price_unit": 250.0,
+#                      "impuestos": ["15%"]}]]
+# Un nombre inexistente es error (cambiaria el total). Sigue admitiendose
+# "tax_ids": [[6, 0, [1]]] con ids crudos para lo ya integrado.
+
 # Crear + postear una factura (idempotente)
 curl -X POST http://localhost:8000/facturas \
   -H "X-Api-Key: tu-clave" \

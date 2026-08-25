@@ -157,6 +157,87 @@ def _resolver_fk(
     return id_encontrado
 
 
+# Uso del impuesto (type_tax_use) segun el tipo de documento. Hace falta porque
+# el nombre NO es unico: en un plan contable tipico "15%" existe dos veces, una
+# para venta y otra para compra. Resolver solo por nombre devolveria el impuesto
+# de venta en una factura de proveedor, con la cuenta de IVA equivocada.
+_USO_IMPUESTO = {
+    "out_invoice": "sale",
+    "out_refund": "sale",
+    "in_invoice": "purchase",
+    "in_refund": "purchase",
+}
+
+
+def _resolver_impuestos(
+    odoo: OdooUniversalAPI, codigos, move_type: str
+) -> list[int]:
+    """
+    Traduce una lista de nombres de impuesto ("15%", "0% Exports") a sus ids en
+    Odoo, filtrando por el uso que corresponde al tipo de documento.
+
+    Los ids de account.tax son internos y CAMBIAN entre instancias, asi que el
+    sistema de origen no deberia conocerlos: manda el nombre y aqui se resuelve,
+    igual que se hace con el NIF del cliente.
+
+    Lanza MapeoError si algun impuesto no existe (es un dato maestro que falta,
+    no algo que se pueda ignorar: cambiaria el total de la factura).
+    """
+    uso = _USO_IMPUESTO.get(move_type, "sale")
+    ids: list[int] = []
+    for codigo in codigos:
+        codigo = str(codigo).strip()
+        if not codigo:
+            continue
+        clave = _clave_cache(odoo, "account.tax", f"name|{uso}", codigo)
+        entrada = _cache_fk.get(clave)
+        if entrada is not None and time.monotonic() < entrada[0]:
+            ids.append(entrada[1])
+            continue
+
+        encontrados = odoo.execute(
+            "account.tax", "search_read",
+            [["name", "=", codigo], ["type_tax_use", "=", uso]],
+            fields=["id"], limit=1,
+        )
+        if not encontrados:
+            raise MapeoError(
+                f"No existe en Odoo un impuesto '{codigo}' para uso '{uso}'. "
+                f"Revisa el nombre o el plan de impuestos de la compania."
+            )
+        id_tax = encontrados[0]["id"]
+        _cache_fk[clave] = (time.monotonic() + _CACHE_TTL_SEG, id_tax)
+        ids.append(id_tax)
+    return ids
+
+
+def _aplicar_impuestos_a_lineas(
+    odoo: OdooUniversalAPI, lineas, move_type: str
+) -> list:
+    """
+    Recorre las lineas del documento y traduce su campo `impuestos` (nombres) al
+    comando Odoo tax_ids [(6, 0, [ids])].
+
+    Si una linea ya trae tax_ids se respeta tal cual: permite seguir enviando
+    ids crudos donde haga falta, sin romper las integraciones existentes.
+    """
+    resultado = []
+    for comando in lineas:
+        # Formato Odoo: (0, 0, {valores}). Cualquier otra cosa se deja intacta.
+        if not (isinstance(comando, (list, tuple)) and len(comando) == 3
+                and isinstance(comando[2], dict)):
+            resultado.append(comando)
+            continue
+
+        valores = dict(comando[2])
+        nombres = valores.pop("impuestos", None)
+        if nombres is not None and "tax_ids" not in valores:
+            ids = _resolver_impuestos(odoo, nombres, move_type)
+            valores["tax_ids"] = [(6, 0, ids)]
+        resultado.append([comando[0], comando[1], valores])
+    return resultado
+
+
 def mapear(entidad: str, registro: dict, odoo: OdooUniversalAPI) -> dict[str, Any]:
     """
     Traduce un registro de origen al dict de valores listo para Odoo.
@@ -184,5 +265,13 @@ def mapear(entidad: str, registro: dict, odoo: OdooUniversalAPI) -> dict[str, An
         fk = _resolver_fk(odoo, campo_odoo, regla, registro)
         if fk is not None:
             valores[campo_odoo] = fk
+
+    # 4. Impuestos por NOMBRE dentro de las lineas (opcional). Se hace aqui y no
+    # con `resolver` porque los impuestos viven dentro de cada linea, no en la
+    # raiz del registro.
+    if "invoice_line_ids" in valores:
+        valores["invoice_line_ids"] = _aplicar_impuestos_a_lineas(
+            odoo, valores["invoice_line_ids"], valores.get("move_type", "out_invoice")
+        )
 
     return valores
