@@ -36,13 +36,12 @@ Se apaga con POLLER_CANCELAR_DESCUADRE=false.
 """
 
 import logging
-import os
 from dataclasses import dataclass
 
 from core import poller_source, state_store
 from core.asientos import AsientoError, crear_asiento
 from core.inventario import InventarioError, ajustar_stock
-from core.rollback import cancelar_factura
+from core.rollback import compensar_descuadre
 from core.sincronizador import SincronizacionError, sincronizar_entidad
 from odoo_universal import OdooConnectionError, OdooUniversalAPI, get_tenant
 
@@ -72,17 +71,6 @@ def _despachar(entidad: str, payload: dict, odoo: OdooUniversalAPI):
     return resultado.id_odoo, (
         f"id_odoo={resultado.id_odoo}"
         + (" (idempotente)" if resultado.idempotente else "")
-    )
-
-
-def _cancelacion_activa() -> bool:
-    """
-    Si el poller debe CANCELAR en Odoo las facturas que quedaron posteadas pero
-    descuadradas. Se lee en cada pasada (no al importar) para poder apagarlo en
-    caliente. Por defecto activo.
-    """
-    return os.getenv("POLLER_CANCELAR_DESCUADRE", "true").strip().lower() not in (
-        "false", "0", "no",
     )
 
 
@@ -135,16 +123,10 @@ def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
         # el registro esta objetivamente mal. Un fallo de action_post, por
         # ejemplo, deja la factura en borrador (no contabiliza nada) y puede
         # deberse a una causa transitoria.
-        if getattr(e, "descuadre", False) and e.id_odoo and _cancelacion_activa():
-            cancelada = cancelar_factura(
-                e.id_odoo, odoo, entidad=entidad, id_origen=id_origen,
-                motivo=f"Descuadre detectado por el poller (cola#{fila_id})",
-            )
-            detalle += (
-                f" | Factura id_odoo={e.id_odoo} CANCELADA automaticamente en Odoo."
-                if cancelada else
-                f" | NO se pudo cancelar id_odoo={e.id_odoo}: REQUIERE INTERVENCION MANUAL."
-            )
+        detalle += compensar_descuadre(
+            e, odoo, entidad=entidad, id_origen=id_origen,
+            origen=f"el poller (cola#{fila_id})",
+        )
 
         # La fila queda en ERROR, no PENDIENTE: reintentarla sola volveria a
         # crear y cancelar la misma factura en bucle. El cliente corrige el

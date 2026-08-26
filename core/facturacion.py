@@ -7,6 +7,7 @@ idempotencia garantizada por el state store.
 """
 
 from core.mapper import cargar_config
+from core.rollback import compensar_descuadre
 from core.sincronizador import ResultadoSync, SincronizacionError, sincronizar_entidad
 from odoo_universal import OdooUniversalAPI
 
@@ -46,4 +47,21 @@ def crear_factura(
         raise SincronizacionError(
             f"El tipo '{entidad}' no tiene mapeo definido en mappings.yaml."
         )
-    return sincronizar_entidad(entidad, registro, odoo)
+
+    try:
+        return sincronizar_entidad(entidad, registro, odoo)
+    except SincronizacionError as e:
+        # Un descuadre deja el documento POSTEADO en Odoo (validar_total corre
+        # despues del action_post). Se cancela aqui tambien, no solo en el
+        # poller: por HTTP el cliente recibia un 422 y el asiento contable se
+        # quedaba vivo, acumulando contabilidad huerfana.
+        extra = compensar_descuadre(
+            e, odoo, entidad=entidad,
+            id_origen=str(registro.get(cargar_config()[entidad]["id_origen"], "")),
+            origen="la peticion",
+        )
+        if extra:
+            raise SincronizacionError(
+                str(e) + extra, id_odoo=e.id_odoo, descuadre=True
+            ) from e
+        raise

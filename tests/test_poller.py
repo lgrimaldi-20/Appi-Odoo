@@ -283,7 +283,8 @@ class TestCancelacionAutomatica:
             fila = s.query(poller_source.ColaSincronizacion).filter_by(
                 id_origen="DESC-2").one()
         assert fila.estado == "ERROR"
-        assert "CANCELADA" in (fila.error_detalle or "")
+        # "CANCELADO/A": el mensaje es comun a facturas y pagos.
+        assert "CANCELAD" in (fila.error_detalle or "")
 
     def test_se_puede_desactivar_por_entorno(self, entorno, monkeypatch):
         """Con POLLER_CANCELAR_DESCUADRE=false la factura se deja para revision."""

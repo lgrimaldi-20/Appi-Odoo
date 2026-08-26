@@ -233,7 +233,7 @@ resume que ocurre en cada tipo de fallo y **quien tiene que actuar**.
 | Cliente/producto/diario inexistente (mapeo) | nada creado | `ERROR` | no hace falta | crear el dato maestro en Odoo y reenviar |
 | Odoo rechaza el `create` (campo invalido) | nada creado | `ERROR` | no hace falta | corregir el payload y reenviar |
 | Falla el `action_post` | creado **en borrador** (no contabiliza) | `ERROR` con `id_odoo` | **no** | revisar en Odoo: postear a mano o borrar |
-| **Descuadre de total** | **posteado** (asiento real) | `ERROR` con `id_odoo` | **si** (poller) | corregir el importe en origen y reencolar |
+| **Descuadre de total** | **posteado** (asiento real) | `ERROR` con `id_odoo` | **si**, por HTTP y por poller | corregir el importe en origen y reenviar |
 | Odoo caido / red | puede haber quedado creado | `PENDIENTE`, conserva `id_odoo` | se **adopta** al reintentar | nada: se reintenta solo |
 | Peticion duplicada simultanea | 1 solo registro | `PROCESANDO` | — | la segunda recibe **409** |
 | Reenvio de algo ya procesado | 1 solo registro | `PROCESADO` | — | responde `idempotente: true` |
@@ -244,8 +244,9 @@ La validacion de total corre **despues** del `action_post` (hay que preguntarle
 a Odoo cuanto suma con sus impuestos). Si no cuadra, la factura ya esta
 **posteada**: es un asiento contable real que nadie dio por bueno.
 
-El poller la **cancela automaticamente** (`button_draft` + `button_cancel`) para
-no dejar contabilidad huerfana. Se desactiva con `POLLER_CANCELAR_DESCUADRE=false`.
+El middleware la **cancela automaticamente**, tanto si llego por HTTP como por el
+poller (`button_draft` + `button_cancel`; un pago usa `action_cancel`), para no
+dejar contabilidad huerfana. Se desactiva con `POLLER_CANCELAR_DESCUADRE=false`.
 
 Solo se cancela el descuadre, a proposito:
 
