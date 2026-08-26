@@ -108,6 +108,14 @@ _PANEL_HTML = r"""<!doctype html>
   .card .n { font-size:28px; font-weight:700; } .card .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
   .card.ok .n{color:var(--ok);} .card.err .n{color:var(--err);} .card.proc .n{color:var(--proc);} .card.pend .n{color:var(--pend);}
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+  .pager { display:flex; gap:10px; align-items:center; justify-content:center;
+           margin-top:14px; flex-wrap:wrap; }
+  .pager button { background:#1e2a3a; color:#cfe3ff; border:1px solid #2c3e55;
+                  border-radius:6px; padding:7px 14px; cursor:pointer; font-size:13px; }
+  .pager button:hover:not(:disabled) { background:#27374b; }
+  .pager button:disabled { opacity:.35; cursor:default; }
+  .pager select { background:#1e2a3a; color:#cfe3ff; border:1px solid #2c3e55;
+                  border-radius:6px; padding:6px 10px; font-size:13px; }
   input,select,button { background:var(--panel2); color:var(--txt); border:1px solid var(--border);
     border-radius:8px; padding:8px 12px; font-size:13px; }
   button { cursor:pointer; } button:hover { border-color:var(--accent); }
@@ -171,13 +179,13 @@ _PANEL_HTML = r"""<!doctype html>
 
   <div id="tab-sync">
     <div class="toolbar">
-      <select id="f-estado" onchange="cargarSync()">
+      <select id="f-estado" onchange="cargarSync(0)">
         <option value="">Todos los estados</option>
         <option>PROCESADO</option><option>ERROR</option>
         <option>PROCESANDO</option><option>PENDIENTE</option>
       </select>
-      <input id="f-entidad" placeholder="entidad (factura, pago...)" oninput="debounce(cargarSync)">
-      <input id="f-idorigen" placeholder="id_origen (parcial)" oninput="debounce(cargarSync)">
+      <input id="f-entidad" placeholder="entidad (factura, pago...)" oninput="debounce(()=>cargarSync(0))">
+      <input id="f-idorigen" placeholder="id_origen (parcial)" oninput="debounce(()=>cargarSync(0))">
       <span id="sync-count" class="muted"></span>
     </div>
     <table>
@@ -187,16 +195,27 @@ _PANEL_HTML = r"""<!doctype html>
       </tr></thead>
       <tbody id="sync-body"></tbody>
     </table>
+    <div class="pager">
+      <button onclick="pagSync(-1)" id="sync-prev">&laquo; Anterior</button>
+      <span id="sync-pag" class="muted"></span>
+      <button onclick="pagSync(1)" id="sync-next">Siguiente &raquo;</button>
+      <select id="sync-tam" onchange="cargarSync(0)">
+        <option value="50">50 por pagina</option>
+        <option value="100" selected>100 por pagina</option>
+        <option value="250">250 por pagina</option>
+        <option value="500">500 por pagina</option>
+      </select>
+    </div>
   </div>
 
   <div id="tab-logs" class="hide">
     <div class="toolbar">
-      <select id="l-resultado" onchange="cargarLogs()">
+      <select id="l-resultado" onchange="cargarLogs(0)">
         <option value="">Todos</option><option>OK</option><option>ERROR</option>
       </select>
       
-      <input id="l-entidad" placeholder="entidad" oninput="debounce(cargarLogs)">
-      <input id="l-idorigen" placeholder="id_origen (parcial)" oninput="debounce(cargarLogs)">
+      <input id="l-entidad" placeholder="entidad" oninput="debounce(()=>cargarLogs(0))">
+      <input id="l-idorigen" placeholder="id_origen (parcial)" oninput="debounce(()=>cargarLogs(0))">
       <span id="logs-count" class="muted"></span>
     </div>
     <table>
@@ -206,6 +225,17 @@ _PANEL_HTML = r"""<!doctype html>
       </tr></thead>
       <tbody id="logs-body"></tbody>
     </table>
+    <div class="pager">
+      <button onclick="pagLogs(-1)" id="logs-prev">&laquo; Anterior</button>
+      <span id="logs-pag" class="muted"></span>
+      <button onclick="pagLogs(1)" id="logs-next">Siguiente &raquo;</button>
+      <select id="logs-tam" onchange="cargarLogs(0)">
+        <option value="50">50 por pagina</option>
+        <option value="100" selected>100 por pagina</option>
+        <option value="250">250 por pagina</option>
+        <option value="500">500 por pagina</option>
+      </select>
+    </div>
   </div>
 </main>
 </div>
@@ -286,14 +316,50 @@ async function cargarResumen(){
     <div class="card"><div class="n">${d.logs.total}</div><div class="l">Logs (${d.logs.errores} err)</div></div>`;
 }
 
-async function cargarSync(){
+// Desplazamiento actual de cada tabla. La API pagina con limite+offset y
+// devuelve el total, asi que el panel solo tiene que llevar la cuenta.
+let offSync = 0, offLogs = 0;
+
+function pagSync(dir){
+  const tam = +document.getElementById("sync-tam").value;
+  offSync = Math.max(0, offSync + dir*tam);
+  cargarSync();
+}
+
+function pagLogs(dir){
+  const tam = +document.getElementById("logs-tam").value;
+  offLogs = Math.max(0, offLogs + dir*tam);
+  cargarLogs();
+}
+
+// Pinta "N-M de T" y desactiva las flechas en los extremos.
+function pintarPager(pre, off, tam, total){
+  const desde = total ? off+1 : 0, hasta = Math.min(off+tam, total);
+  document.getElementById(pre+"-pag").textContent =
+    total ? `${desde}-${hasta} de ${total}` : "sin resultados";
+  document.getElementById(pre+"-prev").disabled = off <= 0;
+  document.getElementById(pre+"-next").disabled = hasta >= total;
+}
+
+async function cargarSync(reset){
+  // Al filtrar o cambiar el tamano se vuelve a la primera pagina: mantener el
+  // offset mostraria una pagina vacia si el nuevo filtro trae menos registros.
+  if(reset===0) offSync = 0;
   const p = new URLSearchParams();
   const est=document.getElementById("f-estado").value;
   const ent=document.getElementById("f-entidad").value;
   const ido=document.getElementById("f-idorigen").value;
+  const tam=+document.getElementById("sync-tam").value;
   if(est)p.set("estado",est); if(ent)p.set("entidad",ent); if(ido)p.set("id_origen",ido);
+  p.set("limite",tam); p.set("offset",offSync);
   const d = await api("/panel/api/sincronizaciones?"+p.toString());
+  // Si el offset se paso del final (p.ej. tras filtrar), retrocede a la ultima.
+  if(!d.items.length && d.total && offSync >= d.total){
+    offSync = Math.max(0, (Math.ceil(d.total/tam)-1)*tam);
+    return cargarSync();
+  }
   document.getElementById("sync-count").textContent = d.total+" registro(s)";
+  pintarPager("sync", offSync, tam, d.total);
   const b=document.getElementById("sync-body");
   if(!d.items.length){ b.innerHTML=`<tr><td colspan="7" class="empty">Sin resultados</td></tr>`; return; }
   b.innerHTML = d.items.map(m=>`<tr>
@@ -307,14 +373,22 @@ async function cargarSync(){
   </tr>`).join("");
 }
 
-async function cargarLogs(){
+async function cargarLogs(reset){
+  if(reset===0) offLogs = 0;
   const p = new URLSearchParams();
   const res=document.getElementById("l-resultado").value;
   const ent=document.getElementById("l-entidad").value;
   const ido=document.getElementById("l-idorigen").value;
+  const tam=+document.getElementById("logs-tam").value;
   if(res)p.set("resultado",res); if(ent)p.set("entidad",ent); if(ido)p.set("id_origen",ido);
+  p.set("limite",tam); p.set("offset",offLogs);
   const d = await api("/panel/api/logs?"+p.toString());
+  if(!d.items.length && d.total && offLogs >= d.total){
+    offLogs = Math.max(0, (Math.ceil(d.total/tam)-1)*tam);
+    return cargarLogs();
+  }
   document.getElementById("logs-count").textContent = d.total+" entrada(s)";
+  pintarPager("logs", offLogs, tam, d.total);
   const b=document.getElementById("logs-body");
   if(!d.items.length){ b.innerHTML=`<tr><td colspan="6" class="empty">Sin resultados</td></tr>`; return; }
   b.innerHTML = d.items.map(l=>`<tr>

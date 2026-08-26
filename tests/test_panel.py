@@ -131,3 +131,66 @@ class TestRouterPanel:
         r = client.get("/panel/api/sincronizaciones")
         assert r.status_code == 200
         assert "items" in r.json()
+
+
+class TestPaginacion:
+    """
+    Sin paginar, el panel solo mostraba los primeros registros y el resto era
+    inalcanzable: tras una tanda de pruebas de 338 registros no habia forma de
+    ver los mas antiguos desde la interfaz.
+    """
+
+    def _muchos(self, store):
+        """Crea 25 mapeos para poder recorrer varias paginas."""
+        from core.models_db import EstadoSync
+        import core.state_store as state_store
+
+        for i in range(25):
+            state_store.registrar_mapeo(
+                "factura", f"PAG-{i:03d}", model_odoo="account.move",
+                id_odoo=1000 + i, estado=EstadoSync.PROCESADO,
+            )
+
+    def test_el_total_no_depende_de_la_pagina(self, store):
+        """`total` cuenta TODO lo que hay, no lo que cabe en la pagina."""
+        self._muchos(store)
+        pagina = store.listar_sincronizaciones(limite=10, offset=0)
+        assert len(pagina["items"]) == 10
+        assert pagina["total"] >= 25, "el total debe contar todos los registros"
+
+    def test_las_paginas_no_se_solapan(self, store):
+        """Dos paginas consecutivas deben traer registros distintos."""
+        self._muchos(store)
+        p1 = store.listar_sincronizaciones(limite=10, offset=0)
+        p2 = store.listar_sincronizaciones(limite=10, offset=10)
+
+        ids1 = {i["id_origen"] for i in p1["items"]}
+        ids2 = {i["id_origen"] for i in p2["items"]}
+        assert not (ids1 & ids2), "hay registros repetidos entre paginas"
+
+    def test_recorrer_todas_las_paginas_cubre_el_total(self):
+        """Ningun registro queda inalcanzable al paginar."""
+        import core.observabilidad as observabilidad
+
+        vistos, offset = set(), 0
+        total = observabilidad.listar_sincronizaciones(limite=1)["total"]
+        while offset < total:
+            for item in observabilidad.listar_sincronizaciones(
+                limite=10, offset=offset
+            )["items"]:
+                vistos.add(item["id_origen"])
+            offset += 10
+        assert len(vistos) == total, (
+            f"se recorrieron {len(vistos)} de {total}: hay registros inalcanzables"
+        )
+
+    def test_un_offset_pasado_del_final_no_falla(self, store):
+        """Pedir una pagina inexistente devuelve vacio, no un error."""
+        r = store.listar_sincronizaciones(limite=10, offset=99999)
+        assert r["items"] == []
+        assert r["total"] >= 0
+
+    def test_los_logs_tambien_paginan(self, store):
+        r = store.listar_logs(limite=2, offset=0)
+        assert len(r["items"]) <= 2
+        assert "total" in r

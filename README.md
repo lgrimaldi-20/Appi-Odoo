@@ -180,10 +180,14 @@ http://localhost:8000/panel
 ```
 
 Dashboard de solo lectura sobre la base de control: totales por estado y
-entidad, ultimas sincronizaciones, logs y el detalle de cada registro con su
+entidad, sincronizaciones, logs y el detalle de cada registro con su
 traza completa (`crear -> postear -> validar_total -> rollback -> ...`). Es
 donde se revisan los `ERROR`. La pagina pide la API Key y la envia en cada
 consulta; los endpoints de datos (`/panel/api/*`) van protegidos.
+
+Las tablas paginan (50/100/250/500 por pagina) con botones Anterior/Siguiente y
+un contador "N-M de T", asi que ninguna sincronizacion queda inalcanzable por
+muchos registros que haya.
 
 ## Seguridad
 
