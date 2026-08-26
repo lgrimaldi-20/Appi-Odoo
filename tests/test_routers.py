@@ -153,7 +153,7 @@ class TestPoller:
         r = client.post("/poller/ejecutar", json={})
         assert r.status_code == 200
         data = r.json()
-        assert data == {"leidas": 3, "procesadas": 2, "con_error": 1}
+        assert data == {"leidas": 3, "procesadas": 2, "con_error": 1, "omitidas": 0}
 
     def test_sin_source_db_devuelve_400(self, monkeypatch):
         monkeypatch.setattr(r_poller, "polling_habilitado", lambda: False)

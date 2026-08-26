@@ -108,6 +108,11 @@ _PANEL_HTML = r"""<!doctype html>
   .card .n { font-size:28px; font-weight:700; } .card .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
   .card.ok .n{color:var(--ok);} .card.err .n{color:var(--err);} .card.proc .n{color:var(--proc);} .card.pend .n{color:var(--pend);}
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+  .vivo { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; }
+  .vivo input { width:auto; }
+  /* Entradas llegadas desde el ultimo refresco: se apagan solas. */
+  @keyframes nueva { from { background:#1d3a2e; } to { background:transparent; } }
+  tr.nueva td { animation: nueva 2.5s ease-out; }
   .pager { display:flex; gap:10px; align-items:center; justify-content:center;
            margin-top:14px; flex-wrap:wrap; }
   .pager button { background:#1e2a3a; color:#cfe3ff; border:1px solid #2c3e55;
@@ -216,6 +221,7 @@ _PANEL_HTML = r"""<!doctype html>
       
       <input id="l-entidad" placeholder="entidad" oninput="debounce(()=>cargarLogs(0))">
       <input id="l-idorigen" placeholder="id_origen (parcial)" oninput="debounce(()=>cargarLogs(0))">
+      <label class="vivo"><input type="checkbox" id="l-vivo"> en vivo (2s)</label>
       <span id="logs-count" class="muted"></span>
     </div>
     <table>
@@ -243,7 +249,9 @@ _PANEL_HTML = r"""<!doctype html>
 <script>
 let APIKEY = sessionStorage.getItem("apikey") || "";
 let tab = "sync";
-let dbTimer = null, autoTimer = null;
+let dbTimer = null, autoTimer = null, vivoTimer = null;
+// Mayor id de log ya pintado: sirve para resaltar lo que llega despues.
+let ultimoLogId = 0;
 
 function debounce(fn){ clearTimeout(dbTimer); dbTimer=setTimeout(fn,300); }
 
@@ -389,9 +397,14 @@ async function cargarLogs(reset){
   }
   document.getElementById("logs-count").textContent = d.total+" entrada(s)";
   pintarPager("logs", offLogs, tam, d.total);
+  // "Nuevas" = las que no estaban en el refresco anterior. Se comparan por id,
+  // que es incremental, en vez de por fecha: dos entradas del mismo segundo se
+  // distinguen igual.
+  const maxAnterior = ultimoLogId;
+  if(d.items.length) ultimoLogId = Math.max(ultimoLogId, ...d.items.map(l=>l.id));
   const b=document.getElementById("logs-body");
   if(!d.items.length){ b.innerHTML=`<tr><td colspan="6" class="empty">Sin resultados</td></tr>`; return; }
-  b.innerHTML = d.items.map(l=>`<tr>
+  b.innerHTML = d.items.map(l=>`<tr class="${maxAnterior && l.id>maxAnterior ? 'nueva':''}">
     <td><span class="badge ${esc(l.resultado)}">${esc(l.resultado)}</span></td>
     <td>${esc(l.entidad)}</td>
     <td class="mono">${esc(l.id_origen)}</td>
@@ -418,6 +431,14 @@ async function cargarTodo(){
     if(e.message.includes("API Key")) salir();
   }
 }
+
+document.getElementById("l-vivo").addEventListener("change", ev=>{
+  if(ev.target.checked){
+    // En vivo = siempre la pagina 1: lo ultimo esta arriba (orden descendente).
+    vivoTimer = setInterval(()=>{ offLogs = 0; cargarLogs(); }, 2000);
+    offLogs = 0; cargarLogs();
+  } else { clearInterval(vivoTimer); vivoTimer = null; }
+});
 
 document.getElementById("auto").addEventListener("change", ev=>{
   if(ev.target.checked){ autoTimer=setInterval(cargarTodo,5000); }

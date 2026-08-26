@@ -394,3 +394,54 @@ class TestDespachoPorEntidad:
                 id_origen="AJ-MALO").one()
         assert fila.estado == "ERROR"
         assert "Stock insuficiente" in (fila.error_detalle or "")
+
+
+class TestPasadasSimultaneas:
+    """
+    Dos pasadas del poller a la vez (p.ej. pulsar "Poller ahora" en el panel
+    mientras Celery Beat dispara la suya) competian por las mismas filas y la
+    perdedora salia con ReservaOcupada sin capturar -> HTTP 500 en la interfaz.
+    No es un error: la fila la termina el otro proceso.
+    """
+
+    def test_una_reserva_ocupada_no_cuenta_como_error(self, entorno, monkeypatch):
+        poller, poller_source, state_store = entorno
+
+        def ocupada(entidad, payload, odoo):
+            raise state_store.ReservaOcupada(entidad, "X", "PROCESANDO")
+
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: MagicMock())
+        monkeypatch.setattr(poller, "sincronizar_entidad", ocupada)
+        with poller_source.get_source_session() as s:
+            s.add(poller_source.ColaSincronizacion(
+                entidad="factura", id_origen="OCUPADA-1",
+                payload={"factura_id": "OCUPADA-1"}, estado="PENDIENTE"))
+            s.commit()
+
+        res = poller.procesar_lote()
+
+        assert res.con_error == 0, "una colision no es un fallo de datos"
+        assert res.omitidas == 1
+
+    def test_la_fila_ocupada_se_deja_pendiente(self, entorno, monkeypatch):
+        """No se marca resultado: la termina quien la reservo."""
+        poller, poller_source, state_store = entorno
+
+        def ocupada(entidad, payload, odoo):
+            raise state_store.ReservaOcupada(entidad, "Y", "PROCESANDO")
+
+        monkeypatch.setattr(poller, "get_tenant", lambda _t: MagicMock())
+        monkeypatch.setattr(poller, "sincronizar_entidad", ocupada)
+        with poller_source.get_source_session() as s:
+            s.add(poller_source.ColaSincronizacion(
+                entidad="factura", id_origen="OCUPADA-2",
+                payload={"factura_id": "OCUPADA-2"}, estado="PENDIENTE"))
+            s.commit()
+
+        poller.procesar_lote()
+
+        with poller_source.get_source_session() as s:
+            fila = s.query(poller_source.ColaSincronizacion).filter_by(
+                id_origen="OCUPADA-2").one()
+        assert fila.estado == "PENDIENTE"
+        assert fila.error_detalle is None, "no debe marcarse como error"

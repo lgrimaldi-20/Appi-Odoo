@@ -39,6 +39,7 @@ import logging
 from dataclasses import dataclass
 
 from core import poller_source, state_store
+from core.state_store import ReservaOcupada
 from core.asientos import AsientoError, crear_asiento
 from core.inventario import InventarioError, ajustar_stock
 from core.rollback import compensar_descuadre
@@ -80,12 +81,14 @@ class ResultadoLote:
     leidas: int       # filas tomadas de la cola
     procesadas: int   # sincronizadas con exito (o ya idempotentes)
     con_error: int    # filas marcadas ERROR por fallo de datos
+    omitidas: int = 0  # las estaba procesando otra pasada (no son un error)
 
 
-def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
+def _procesar_fila(fila: dict, odoo: OdooUniversalAPI):
     """
     Sincroniza una fila de la cola. Devuelve True si termino en PROCESADO,
-    False si quedo en ERROR por un fallo de datos.
+    False si quedo en ERROR por un fallo de datos, y None si otra pasada la
+    tenia reservada (no es un error: la termina el otro).
 
     Re-lanza OdooConnectionError para que el llamador aborte el lote (Odoo esta
     caido: no tiene sentido seguir con el resto).
@@ -109,6 +112,16 @@ def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
             fila_id, entidad, id_origen,
         )
         raise
+    except ReservaOcupada as e:
+        # Otra pasada del poller (o una peticion HTTP) esta procesando esta
+        # misma fila ahora mismo. No es un error de datos ni un fallo: el
+        # ganador la terminara. Se deja PENDIENTE -sin marcar resultado- para
+        # que la siguiente pasada la recoja si hiciera falta.
+        logger.info(
+            "Poller: cola#%s (%s/%s) la esta procesando otro; se omite.",
+            fila_id, entidad, id_origen,
+        )
+        return None
     except (SincronizacionError, InventarioError, AsientoError) as e:
         # Fallo de datos (mapeo, create, post, descuadre, cuadre, stock
         # insuficiente...): aisla la fila y sigue con el resto del lote.
@@ -154,15 +167,22 @@ def procesar_lote(tenant: str = "default", limite: int = 50) -> ResultadoLote:
 
     procesadas = 0
     con_error = 0
+    omitidas = 0
     for fila in lote:
-        if _procesar_fila(fila, odoo):
+        r = _procesar_fila(fila, odoo)
+        if r is None:
+            omitidas += 1          # la esta procesando otro; no cuenta como error
+        elif r:
             procesadas += 1
         else:
             con_error += 1
 
     if lote:
         logger.info(
-            "Poller: lote de %s fila(s) -> %s ok, %s error.",
-            len(lote), procesadas, con_error,
+            "Poller: lote de %s fila(s) -> %s ok, %s error, %s omitidas.",
+            len(lote), procesadas, con_error, omitidas,
         )
-    return ResultadoLote(leidas=len(lote), procesadas=procesadas, con_error=con_error)
+    return ResultadoLote(
+        leidas=len(lote), procesadas=procesadas,
+        con_error=con_error, omitidas=omitidas,
+    )

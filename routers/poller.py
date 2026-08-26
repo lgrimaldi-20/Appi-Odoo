@@ -55,3 +55,13 @@ def ejecutar(req: EjecutarPollerRequest):
     except OdooConnectionError as e:
         logger.error("POLLER_CONEXION | %s", e)
         raise HTTPException(status_code=503, detail=f"Error de conexion con Odoo: {e}")
+    except Exception as e:
+        # Red de seguridad: una pasada del poller recorre muchas filas y toca
+        # varios modulos, asi que cualquier fallo inesperado saldria como un 500
+        # desnudo ("Internal Server Error") sin decir que paso. Se registra con
+        # traza y se devuelve un mensaje util.
+        logger.exception("POLLER_FALLO | %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fallo inesperado en la pasada del poller: {e}",
+        )
