@@ -12,12 +12,18 @@ errores HTTP habitual.
 import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.poller import procesar_lote
 from core.poller_source import polling_habilitado
-from core.seguridad import resolver_tenant, verify_api_key
+from core.seguridad import (
+    LIMITE_POLLER,
+    error_interno,
+    limiter,
+    resolver_tenant,
+    verify_api_key,
+)
 from odoo_universal import OdooConnectionError
 
 logger = logging.getLogger("api-odoo")
@@ -32,7 +38,8 @@ class EjecutarPollerRequest(BaseModel):
 
 
 @router.post("/poller/ejecutar")
-def ejecutar(req: EjecutarPollerRequest):
+@limiter.limit(LIMITE_POLLER)
+def ejecutar(req: EjecutarPollerRequest, request: Request):
     """
     Ejecuta una pasada del poller de forma sincrona y devuelve el resumen
     (leidas, procesadas, con_error).
@@ -58,10 +65,9 @@ def ejecutar(req: EjecutarPollerRequest):
     except Exception as e:
         # Red de seguridad: una pasada del poller recorre muchas filas y toca
         # varios modulos, asi que cualquier fallo inesperado saldria como un 500
-        # desnudo ("Internal Server Error") sin decir que paso. Se registra con
-        # traza y se devuelve un mensaje util.
-        logger.exception("POLLER_FALLO | %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Fallo inesperado en la pasada del poller: {e}",
-        )
+        # desnudo ("Internal Server Error") sin decir que paso.
+        #
+        # La traza completa va al log; al cliente solo le llega una referencia
+        # de incidencia, no el texto de la excepcion (auditoria H-5). El panel
+        # muestra esa referencia, que basta para cruzarla con el log.
+        raise error_interno(e, f"/poller/ejecutar tenant={req.tenant}")

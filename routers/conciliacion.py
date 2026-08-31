@@ -7,11 +7,11 @@ Idempotente: una pareja ya conciliada devuelve idempotente=true sin tocar Odoo.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.conciliacion import ConciliacionError, conciliar
-from core.seguridad import resolver_tenant, verify_api_key
+from core.seguridad import LIMITE_NEGOCIO, limiter, resolver_tenant, verify_api_key
 from core.state_store import ReservaOcupada
 from odoo_universal import OdooConnectionError, OdooUniversalAPI
 
@@ -30,7 +30,8 @@ class ConciliacionRequest(BaseModel):
 
 
 @router.post("/conciliar")
-def conciliar_factura_pago(req: ConciliacionRequest):
+@limiter.limit(LIMITE_NEGOCIO)
+def conciliar_factura_pago(req: ConciliacionRequest, request: Request):
     """
     Concilia una factura con un pago (cruza sus apuntes contables).
     """

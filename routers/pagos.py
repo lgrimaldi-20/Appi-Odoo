@@ -7,11 +7,11 @@ Recibe un registro de pago de la DB de origen, lo sincroniza con Odoo
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.pagos import crear_pago
-from core.seguridad import resolver_tenant, verify_api_key
+from core.seguridad import LIMITE_NEGOCIO, limiter, resolver_tenant, verify_api_key
 from core.state_store import ReservaOcupada
 from core.sincronizador import SincronizacionError
 from core.tasks import sincronizar_pago_task
@@ -33,7 +33,8 @@ class PagoRequest(BaseModel):
 
 
 @router.post("/pagos")
-def sincronizar_pago(req: PagoRequest):
+@limiter.limit(LIMITE_NEGOCIO)
+def sincronizar_pago(req: PagoRequest, request: Request):
     """
     Sincroniza un pago hacia Odoo (crea + postea).
 

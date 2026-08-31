@@ -11,11 +11,11 @@ que el asiento cuadre antes de tocar Odoo).
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.asientos import AsientoError, crear_asiento, eliminar_asiento
-from core.seguridad import resolver_tenant, verify_api_key
+from core.seguridad import LIMITE_NEGOCIO, limiter, resolver_tenant, verify_api_key
 from core.state_store import ReservaOcupada
 from odoo_universal import OdooConnectionError, OdooUniversalAPI
 
@@ -45,7 +45,8 @@ class EliminarAsientoRequest(BaseModel):
 
 
 @router.post("/asientos")
-def crear(req: AsientoRequest):
+@limiter.limit(LIMITE_NEGOCIO)
+def crear(req: AsientoRequest, request: Request):
     """
     Crea un asiento contable en Odoo (account.move tipo 'entry').
 
@@ -68,7 +69,8 @@ def crear(req: AsientoRequest):
 
 
 @router.delete("/asientos")
-def eliminar(req: EliminarAsientoRequest):
+@limiter.limit(LIMITE_NEGOCIO)
+def eliminar(req: EliminarAsientoRequest, request: Request):
     """
     Elimina un asiento contable de Odoo. Se identifica por `asiento_id`
     (id de origen) o por `id_odoo`. Si estaba posteado, se pasa a borrador y

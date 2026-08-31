@@ -7,11 +7,11 @@ Router de INVENTARIO: ajuste y consulta de existencias.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.inventario import InventarioError, ajustar_stock, consultar_stock
-from core.seguridad import resolver_tenant, verify_api_key
+from core.seguridad import LIMITE_LECTURA, LIMITE_NEGOCIO, limiter, resolver_tenant, verify_api_key
 from core.state_store import ReservaOcupada
 from core.tasks import ajustar_stock_task
 from odoo_universal import OdooConnectionError, OdooUniversalAPI
@@ -45,7 +45,8 @@ class ConsultaStockRequest(BaseModel):
 
 
 @router.post("/stock/ajustar")
-def ajustar(req: AjusteStockRequest):
+@limiter.limit(LIMITE_NEGOCIO)
+def ajustar(req: AjusteStockRequest, request: Request):
     """
     Aplica un ajuste de existencias en Odoo (stock.quant + action_apply_inventory).
 
@@ -73,7 +74,8 @@ def ajustar(req: AjusteStockRequest):
 
 
 @router.post("/stock/consultar")
-def consultar(req: ConsultaStockRequest):
+@limiter.limit(LIMITE_LECTURA)
+def consultar(req: ConsultaStockRequest, request: Request):
     """Consulta la existencia actual de un producto en una ubicacion."""
     odoo: OdooUniversalAPI = resolver_tenant(req.tenant)
     try:

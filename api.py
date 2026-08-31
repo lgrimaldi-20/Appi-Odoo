@@ -6,16 +6,15 @@ con un servidor Odoo via JSON-RPC.
 
 import logging
 import os
+import sys
 import time
 from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 # El .env se carga ANTES de importar los modulos del proyecto: core.state_store
 # lee DATABASE_URL en tiempo de import (a nivel de modulo), asi que si se
@@ -30,6 +29,13 @@ from odoo_universal import (  # noqa: E402
     get_tenant,
 )
 from core.state_store import buscar_mapeo, init_db  # noqa: E402
+from core.seguridad import (  # noqa: E402
+    LIMITE_NEGOCIO,
+    error_interno,
+    sanear_error_odoo,
+    limiter,
+    verify_api_key,
+)
 
 # ---------------------------------------------------------------------------
 # Configuracion inicial
@@ -43,16 +49,8 @@ logging.basicConfig(
 logger = logging.getLogger("api-odoo")
 
 # ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
-limiter = Limiter(key_func=get_remote_address)
-
-# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-
-api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
 
 app = FastAPI(
     title="API-Odoo Middleware",
@@ -84,9 +82,34 @@ app.include_router(panel.datos)    # /panel/api/* (JSON, protegido)
 # Variables de entorno
 # ---------------------------------------------------------------------------
 
-API_KEY = os.getenv("API_KEY", "")
-if not API_KEY:
-    logger.warning("API_KEY no configurada - el endpoint /odoo NO esta protegido")
+# ---------------------------------------------------------------------------
+# Modo abierto (sin API Key): permitido, pero nunca por accidente
+# ---------------------------------------------------------------------------
+#
+# Sin API_KEY el servicio queda ENTERO sin autenticacion. Eso es comodo en
+# desarrollo, pero antes ocurria en silencio: un .env mal desplegado o una
+# variable que no llega al contenedor publicaba el middleware abierto y
+# /health seguia diciendo "ok". El fallo iba en la direccion insegura.
+#
+# Ahora arrancar sin clave exige pedirlo a proposito con ENTORNO=desarrollo.
+# Bajo pytest se permite sin mas: la suite prueba justamente ese modo.
+# Ver auditoria H-4.
+
+ENTORNO = os.getenv("ENTORNO", "produccion").strip().lower()
+AUTENTICACION_ACTIVA = bool(os.getenv("API_KEY", ""))
+_bajo_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+if not AUTENTICACION_ACTIVA:
+    if ENTORNO == "produccion" and not _bajo_pytest:
+        raise RuntimeError(
+            "API_KEY no configurada y ENTORNO=produccion. El servicio quedaria "
+            "sin autenticacion. Define API_KEY, o arranca con ENTORNO=desarrollo "
+            "si de verdad quieres el modo abierto."
+        )
+    logger.warning(
+        "API_KEY no configurada - TODOS los endpoints estan SIN PROTEGER "
+        "(ENTORNO=%s)", ENTORNO,
+    )
 
 _raw_models = os.getenv("ALLOWED_MODELS", "")
 _raw_methods = os.getenv("ALLOWED_METHODS", "")
@@ -116,13 +139,9 @@ except OdooConnectionError as e:
 # ---------------------------------------------------------------------------
 
 
-def verify_api_key(x_api_key: Optional[str] = Depends(api_key_header)):
-    """
-    Verifica la cabecera X-Api-Key.
-    Si API_KEY no esta configurada, pasa sin validar (modo desarrollo).
-    """
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="API Key invalida o ausente.")
+# La verificacion vive en core/seguridad.py y se importa: tener dos copias de
+# la misma comprobacion hacia que divergieran (esta usaba "!=", vulnerable a
+# timing, y leia API_KEY congelada en el import). Ver auditoria H-1.
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +194,9 @@ def health_check():
         # Version del servidor Odoo detectada en el arranque. Util para verificar
         # de un vistazo contra que version se esta hablando (17/18/19).
         "odoo_version": getattr(_default_odoo, "version", None) if odoo_ok else None,
+        # Visible para monitorizacion: si esto dice DESACTIVADA en un despliegue
+        # real, el servicio esta abierto a cualquiera. Ver auditoria H-4.
+        "autenticacion": "activa" if os.getenv("API_KEY", "") else "DESACTIVADA",
         "modelos_permitidos": sorted(ALLOWED_MODELS) if ALLOWED_MODELS else "todos",
         "metodos_permitidos": sorted(ALLOWED_METHODS) if ALLOWED_METHODS else "todos",
     }
@@ -210,7 +232,7 @@ def estado_sincronizacion(entidad: str, id_origen: str):
 
 
 @app.post("/odoo", tags=["Odoo"], dependencies=[Depends(verify_api_key)])
-@limiter.limit("60/minute")
+@limiter.limit(LIMITE_NEGOCIO)
 def odoo_proxy(req: OdooRequest, request: Request):
     """
     Endpoint universal para ejecutar operaciones sobre modelos de Odoo.
@@ -250,10 +272,16 @@ def odoo_proxy(req: OdooRequest, request: Request):
         raise HTTPException(status_code=503, detail=f"Error de conexion con Odoo: {e}")
     except OdooExecutionError as e:
         logger.warning("ERROR_ODOO | model=%s method=%s error=%s", req.model, req.method, e)
-        raise HTTPException(status_code=422, detail=f"Error de Odoo: {e}")
+        # El texto se sanea: los errores de negocio de Odoo pasan intactos,
+        # pero los que vienen de PostgreSQL llevan SQL y nombres de tablas
+        # dentro y no deben salir del servidor. Ver auditoria H-5b.
+        raise HTTPException(
+            status_code=422, detail=f"Error de Odoo: {sanear_error_odoo(e)}"
+        )
     except Exception as e:
-        logger.exception("ERROR_INESPERADO | model=%s method=%s", req.model, req.method)
-        raise HTTPException(status_code=500, detail=f"Error interno: {e}")
+        # El texto de la excepcion NO vuelve al cliente: puede llevar rutas,
+        # nombres de tablas o cadenas de conexion. Ver auditoria H-5.
+        raise error_interno(e, f"/odoo model={req.model} method={req.method}")
 
     duracion = round((time.time() - inicio) * 1000)
     logger.info(

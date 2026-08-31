@@ -27,7 +27,7 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def reset_api_key(monkeypatch):
     """Por defecto, desactiva la API Key para simplificar tests."""
-    monkeypatch.setattr(api_module, "API_KEY", "")
+    monkeypatch.delenv("API_KEY", raising=False)
     monkeypatch.setattr(api_module, "ALLOWED_MODELS", set())
     monkeypatch.setattr(api_module, "ALLOWED_METHODS", set())
 
@@ -64,14 +64,14 @@ class TestHealth:
 
 class TestAutenticacion:
     def test_rechaza_sin_api_key_cuando_configurada(self, monkeypatch):
-        monkeypatch.setattr(api_module, "API_KEY", "clave-secreta")
+        monkeypatch.setenv("API_KEY", "clave-secreta")
         response = client.post("/odoo", json={
             "model": "res.partner", "method": "search_read"
         })
         assert response.status_code == 401
 
     def test_rechaza_api_key_incorrecta(self, monkeypatch):
-        monkeypatch.setattr(api_module, "API_KEY", "clave-secreta")
+        monkeypatch.setenv("API_KEY", "clave-secreta")
         response = client.post(
             "/odoo",
             json={"model": "res.partner", "method": "search_read"},
@@ -80,7 +80,7 @@ class TestAutenticacion:
         assert response.status_code == 401
 
     def test_acepta_api_key_correcta(self, monkeypatch):
-        monkeypatch.setattr(api_module, "API_KEY", "clave-secreta")
+        monkeypatch.setenv("API_KEY", "clave-secreta")
         response = client.post(
             "/odoo",
             json={"model": "res.partner", "method": "search_read"},

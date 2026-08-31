@@ -13,11 +13,11 @@ Seguridad: los endpoints de DATOS estan protegidos con la misma API Key
 HTML (no lleva datos), y su JavaScript pide la clave y la envia en cada fetch.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
 from core import observabilidad
-from core.seguridad import verify_api_key
+from core.seguridad import LIMITE_LECTURA, limiter, verify_api_key
 
 # Router de datos (protegido). Prefijo /panel/api.
 router = APIRouter(prefix="/panel", tags=["Panel"])
@@ -28,13 +28,16 @@ datos = APIRouter(
 
 
 @datos.get("/resumen")
-def api_resumen():
+@limiter.limit(LIMITE_LECTURA)
+def api_resumen(request: Request):
     """Resumen agregado para las tarjetas del panel."""
     return observabilidad.resumen()
 
 
 @datos.get("/sincronizaciones")
+@limiter.limit(LIMITE_LECTURA)
 def api_sincronizaciones(
+    request: Request,
     estado: str | None = Query(None, description="PROCESADO|ERROR|PROCESANDO|PENDIENTE"),
     entidad: str | None = Query(None, description="factura|pago|conciliacion|..."),
     id_origen: str | None = Query(None, description="Coincidencia parcial."),
@@ -49,7 +52,9 @@ def api_sincronizaciones(
 
 
 @datos.get("/logs")
+@limiter.limit(LIMITE_LECTURA)
 def api_logs(
+    request: Request,
     entidad: str | None = Query(None),
     id_origen: str | None = Query(None),
     resultado: str | None = Query(None, description="OK|ERROR"),
@@ -64,7 +69,8 @@ def api_logs(
 
 
 @datos.get("/detalle/{entidad}/{id_origen}")
-def api_detalle(entidad: str, id_origen: str):
+@limiter.limit(LIMITE_LECTURA)
+def api_detalle(entidad: str, id_origen: str, request: Request):
     """Detalle de un registro: su mapeo mas toda su bitacora."""
     return observabilidad.detalle_registro(entidad, id_origen)
 
