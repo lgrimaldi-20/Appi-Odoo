@@ -42,3 +42,8 @@ resume/
 *.docx
 *.xlsx
 !docs/**/*.xlsx
+
+# Informes locales (auditorias, notas): se quedan en la maquina, no en el repo.
+# Una auditoria describe donde estaban los huecos: util para el equipo,
+# innecesario de publicar.
+*.local.md
