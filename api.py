@@ -11,7 +11,6 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -43,13 +42,12 @@ logger = logging.getLogger("api-odoo")
 # Rate limiter
 # ---------------------------------------------------------------------------
 
-limiter = Limiter(key_func=get_remote_address)
+from core.limites import limiter  # limitador compartido con los routers
 
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
 
 app = FastAPI(
     title="API-Odoo Middleware",
@@ -59,11 +57,25 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+
+@app.middleware("http")
+async def _refrescar_whitelists(request: Request, call_next):
+    """
+    Relee las whitelists del entorno en cada peticion.
+
+    Antes se cacheaban al importar el modulo: restringir la lista tras un
+    incidente no surtia efecto hasta reiniciar el proceso, justo cuando mas
+    urgente es que el cambio se aplique ya.
+    """
+    recargar_whitelists()
+    return await call_next(request)
+
 # Base de datos de control (state store). Crea las tablas si no existen.
 init_db()
 logger.info("Base de datos de control inicializada.")
 
 # Routers de negocio (facturas, pagos). Endpoints con estado e idempotencia.
+from core.seguridad import verify_api_key  # noqa: E402  (unica implementacion de auth)
 from routers import conciliacion, facturas, inventario, pagos, panel, poller, smartier  # noqa: E402  (import tras crear la app)
 
 app.include_router(facturas.router)
@@ -79,15 +91,33 @@ app.include_router(panel.datos)    # /panel/api/* (JSON, protegido)
 # Variables de entorno
 # ---------------------------------------------------------------------------
 
-API_KEY = os.getenv("API_KEY", "")
-if not API_KEY:
-    logger.warning("API_KEY no configurada - el endpoint /odoo NO esta protegido")
+if not os.getenv("API_KEY", "").strip():
+    if os.getenv("PERMITIR_SIN_API_KEY", "").strip().lower() == "true":
+        logger.warning(
+            "API_KEY no configurada y PERMITIR_SIN_API_KEY=true: "
+            "el servicio acepta peticiones SIN autenticar (solo desarrollo)."
+        )
+    else:
+        logger.error(
+            "API_KEY no configurada: el servicio rechazara las peticiones con 503."
+        )
 
-_raw_models = os.getenv("ALLOWED_MODELS", "")
-_raw_methods = os.getenv("ALLOWED_METHODS", "")
 
-ALLOWED_MODELS: set[str] = {m.strip() for m in _raw_models.split(",") if m.strip()}
-ALLOWED_METHODS: set[str] = {m.strip() for m in _raw_methods.split(",") if m.strip()}
+def _lista_permitidos(variable: str) -> set[str]:
+    """
+    Lee una whitelist del entorno EN CADA LLAMADA.
+
+    Antes se cacheaban al importar el modulo, asi que restringir la lista tras
+    un incidente no surtia efecto hasta reiniciar el proceso -- justo cuando
+    mas falta hace que el cambio sea inmediato.
+    """
+    return {x.strip() for x in os.getenv(variable, "").split(",") if x.strip()}
+
+
+# Se conservan como nombres de modulo porque /health y los tests los consultan;
+# la validacion real usa _lista_permitidos() para releer el entorno.
+ALLOWED_MODELS: set[str] = _lista_permitidos("ALLOWED_MODELS")
+ALLOWED_METHODS: set[str] = _lista_permitidos("ALLOWED_METHODS")
 
 # ---------------------------------------------------------------------------
 # Conexion Odoo principal (tenant "default")
@@ -111,13 +141,31 @@ except OdooConnectionError as e:
 # ---------------------------------------------------------------------------
 
 
-def verify_api_key(x_api_key: Optional[str] = Depends(api_key_header)):
+# verify_api_key vive en core/seguridad.py y se importa mas abajo, junto con los
+# routers: una sola implementacion para toda la app evita que una copia quede
+# desactualizada respecto a la otra (fue el caso: aqui habia una version que
+# comparaba con != y dejaba pasar si API_KEY estaba vacia).
+
+
+def _whitelist_vigente(variable: str, _por_defecto: set[str]) -> set[str]:
     """
-    Verifica la cabecera X-Api-Key.
-    Si API_KEY no esta configurada, pasa sin validar (modo desarrollo).
+    Whitelist a aplicar ahora mismo.
+
+    Se lee del modulo, no del entorno, porque `recargar_whitelists()` mantiene
+    ambos sincronizados y asi un monkeypatch en los tests sigue funcionando.
+    El refresco desde el entorno lo hace el middleware HTTP en cada peticion,
+    de modo que editar el .env surte efecto sin reiniciar el proceso.
     """
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="API Key invalida o ausente.")
+    import sys
+
+    return getattr(sys.modules[__name__], variable, _por_defecto)
+
+
+def recargar_whitelists() -> None:
+    """Relee ALLOWED_MODELS / ALLOWED_METHODS del entorno."""
+    global ALLOWED_MODELS, ALLOWED_METHODS
+    ALLOWED_MODELS = _lista_permitidos("ALLOWED_MODELS")
+    ALLOWED_METHODS = _lista_permitidos("ALLOWED_METHODS")
 
 
 # ---------------------------------------------------------------------------
@@ -135,18 +183,20 @@ class OdooRequest(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, v: str) -> str:
-        if ALLOWED_MODELS and v not in ALLOWED_MODELS:
+        permitidos = _whitelist_vigente("ALLOWED_MODELS", ALLOWED_MODELS)
+        if permitidos and v not in permitidos:
             raise ValueError(
-                f"Modelo '{v}' no permitido. Permitidos: {sorted(ALLOWED_MODELS)}"
+                f"Modelo '{v}' no permitido. Permitidos: {sorted(permitidos)}"
             )
         return v
 
     @field_validator("method")
     @classmethod
     def validate_method(cls, v: str) -> str:
-        if ALLOWED_METHODS and v not in ALLOWED_METHODS:
+        permitidos = _whitelist_vigente("ALLOWED_METHODS", ALLOWED_METHODS)
+        if permitidos and v not in permitidos:
             raise ValueError(
-                f"Metodo '{v}' no permitido. Permitidos: {sorted(ALLOWED_METHODS)}"
+                f"Metodo '{v}' no permitido. Permitidos: {sorted(permitidos)}"
             )
         return v
 
@@ -243,9 +293,12 @@ def odoo_proxy(req: OdooRequest, request: Request):
     except OdooExecutionError as e:
         logger.warning("ERROR_ODOO | model=%s method=%s error=%s", req.model, req.method, e)
         raise HTTPException(status_code=422, detail=f"Error de Odoo: {e}")
-    except Exception as e:
+    except Exception:
+        # El detalle va al log, no a la respuesta: el texto de la excepcion
+        # puede llevar rutas, nombres de tablas o trozos de la cadena de
+        # conexion, que son material de reconocimiento para un atacante.
         logger.exception("ERROR_INESPERADO | model=%s method=%s", req.model, req.method)
-        raise HTTPException(status_code=500, detail=f"Error interno: {e}")
+        raise HTTPException(status_code=500, detail="Error interno del servicio.")
 
     duracion = round((time.time() - inicio) * 1000)
     logger.info(

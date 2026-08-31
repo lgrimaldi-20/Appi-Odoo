@@ -13,10 +13,11 @@ mapeo de errores HTTP.
 import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.ingesta_smartier import IngestaError, diagnostico, ingerir_notas_entrega
+from core.limites import limitar
 from core.seguridad import verify_api_key
 from core.smartier_client import smartier_habilitado
 
@@ -35,7 +36,8 @@ class IngerirRequest(BaseModel):
 
 
 @router.post("/smartier/ingerir")
-def ingerir(req: IngerirRequest):
+@limitar("6/minute")
+def ingerir(req: IngerirRequest, request: Request):
     """
     Ejecuta una pasada de ingesta de forma sincrona y devuelve el resumen
     (leidas, encoladas, omitidas, marca_agua).

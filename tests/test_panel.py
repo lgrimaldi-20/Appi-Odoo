@@ -108,6 +108,7 @@ client = TestClient(app)
 class TestRouterPanel:
     def test_panel_html_sin_auth(self, monkeypatch):
         monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.setenv("PERMITIR_SIN_API_KEY", "true")
         r = client.get("/panel")
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
@@ -115,11 +116,13 @@ class TestRouterPanel:
         assert "Poller ahora" in r.text
 
     def test_api_resumen_sin_key_devuelve_401(self, monkeypatch):
+        monkeypatch.delenv("PERMITIR_SIN_API_KEY", raising=False)
         monkeypatch.setenv("API_KEY", "secreta")
         r = client.get("/panel/api/resumen")
         assert r.status_code == 401
 
     def test_api_resumen_con_key_ok(self, monkeypatch):
+        monkeypatch.delenv("PERMITIR_SIN_API_KEY", raising=False)
         monkeypatch.setenv("API_KEY", "secreta")
         r = client.get("/panel/api/resumen", headers={"X-Api-Key": "secreta"})
         assert r.status_code == 200
@@ -128,6 +131,7 @@ class TestRouterPanel:
     def test_api_sincronizaciones_sin_apikey_configurada(self, monkeypatch):
         # Sin API_KEY en el entorno, el acceso pasa (modo desarrollo).
         monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.setenv("PERMITIR_SIN_API_KEY", "true")
         r = client.get("/panel/api/sincronizaciones")
         assert r.status_code == 200
         assert "items" in r.json()
@@ -137,6 +141,7 @@ class TestColaPoller:
     """Vista de la cola del poller (modo pull) en el panel."""
 
     def test_cola_sin_key_devuelve_401(self, monkeypatch):
+        monkeypatch.delenv("PERMITIR_SIN_API_KEY", raising=False)
         monkeypatch.setenv("API_KEY", "secreta")
         r = client.get("/panel/api/cola")
         assert r.status_code == 401
@@ -147,6 +152,7 @@ class TestColaPoller:
         con habilitado=False, no reventar por falta de conexion.
         """
         monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.setenv("PERMITIR_SIN_API_KEY", "true")
         import core.poller_source as ps
         monkeypatch.setattr(ps, "SOURCE_DATABASE_URL", "")
 
@@ -159,6 +165,7 @@ class TestColaPoller:
     def test_cola_lista_filas_y_totales(self, tmp_path, monkeypatch):
         """Con una cola real, devuelve las filas y los totales por estado."""
         monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.setenv("PERMITIR_SIN_API_KEY", "true")
 
         import importlib
 

@@ -12,11 +12,12 @@ errores HTTP habitual.
 import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.poller import procesar_lote
 from core.poller_source import polling_habilitado
+from core.limites import limitar
 from core.seguridad import resolver_tenant, verify_api_key
 from odoo_universal import OdooConnectionError
 
@@ -32,7 +33,8 @@ class EjecutarPollerRequest(BaseModel):
 
 
 @router.post("/poller/ejecutar")
-def ejecutar(req: EjecutarPollerRequest):
+@limitar("6/minute")
+def ejecutar(req: EjecutarPollerRequest, request: Request):
     """
     Ejecuta una pasada del poller de forma sincrona y devuelve el resumen
     (leidas, procesadas, con_error).

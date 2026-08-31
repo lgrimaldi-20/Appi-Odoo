@@ -35,6 +35,7 @@ client = TestClient(app)
 def sin_api_key(monkeypatch):
     """Desactiva la API key para simplificar (modo desarrollo)."""
     monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("PERMITIR_SIN_API_KEY", "true")
 
 
 def _resultado_ok(registro):

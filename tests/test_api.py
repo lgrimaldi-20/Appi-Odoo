@@ -26,8 +26,19 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def reset_api_key(monkeypatch):
-    """Por defecto, desactiva la API Key para simplificar tests."""
-    monkeypatch.setattr(api_module, "API_KEY", "")
+    """
+    Por defecto, tests sin API Key.
+
+    La autenticacion es fail-closed: sin API_KEY el servicio responde 503, asi
+    que para simplificar los tests se activa el modo de desarrollo explicito
+    (PERMITIR_SIN_API_KEY), que es la misma via que usaria un entorno local.
+    """
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("PERMITIR_SIN_API_KEY", "true")
+    # Las whitelists se releen del entorno en cada peticion, asi que se vacian
+    # ahi ademas de en el modulo; si no, el .env real se colaria en los tests.
+    monkeypatch.setenv("ALLOWED_MODELS", "")
+    monkeypatch.setenv("ALLOWED_METHODS", "")
     monkeypatch.setattr(api_module, "ALLOWED_MODELS", set())
     monkeypatch.setattr(api_module, "ALLOWED_METHODS", set())
 
@@ -64,14 +75,14 @@ class TestHealth:
 
 class TestAutenticacion:
     def test_rechaza_sin_api_key_cuando_configurada(self, monkeypatch):
-        monkeypatch.setattr(api_module, "API_KEY", "clave-secreta")
+        monkeypatch.setenv("API_KEY", "clave-secreta")
         response = client.post("/odoo", json={
             "model": "res.partner", "method": "search_read"
         })
         assert response.status_code == 401
 
     def test_rechaza_api_key_incorrecta(self, monkeypatch):
-        monkeypatch.setattr(api_module, "API_KEY", "clave-secreta")
+        monkeypatch.setenv("API_KEY", "clave-secreta")
         response = client.post(
             "/odoo",
             json={"model": "res.partner", "method": "search_read"},
@@ -80,7 +91,7 @@ class TestAutenticacion:
         assert response.status_code == 401
 
     def test_acepta_api_key_correcta(self, monkeypatch):
-        monkeypatch.setattr(api_module, "API_KEY", "clave-secreta")
+        monkeypatch.setenv("API_KEY", "clave-secreta")
         response = client.post(
             "/odoo",
             json={"model": "res.partner", "method": "search_read"},
@@ -102,21 +113,21 @@ class TestAutenticacion:
 
 class TestWhitelist:
     def test_modelo_no_permitido(self, monkeypatch):
-        monkeypatch.setattr(api_module, "ALLOWED_MODELS", {"res.partner"})
+        monkeypatch.setenv("ALLOWED_MODELS", "res.partner")
         response = client.post("/odoo", json={
             "model": "hr.employee", "method": "search_read"
         })
         assert response.status_code == 422
 
     def test_metodo_no_permitido(self, monkeypatch):
-        monkeypatch.setattr(api_module, "ALLOWED_METHODS", {"search_read", "read"})
+        monkeypatch.setenv("ALLOWED_METHODS", "search_read,read")
         response = client.post("/odoo", json={
             "model": "res.partner", "method": "unlink"
         })
         assert response.status_code == 422
 
     def test_modelo_permitido(self, monkeypatch):
-        monkeypatch.setattr(api_module, "ALLOWED_MODELS", {"res.partner"})
+        monkeypatch.setenv("ALLOWED_MODELS", "res.partner")
         response = client.post("/odoo", json={
             "model": "res.partner", "method": "search_read"
         })

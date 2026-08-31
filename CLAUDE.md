@@ -87,6 +87,16 @@ Note the whitelists (`ALLOWED_MODELS`/`ALLOWED_METHODS`) only gate the generic `
 
 ## Security & error codes
 
+**Authentication is fail-closed.** With no `API_KEY` set, the service answers **503** rather than letting requests through — the previous fail-open behaviour meant an unmounted `.env` silently exposed invoice creation to anyone. Local development without a key needs the explicit `PERMITIR_SIN_API_KEY=true`. Keys are compared with `secrets.compare_digest` (constant time); a plain `!=` leaks the secret byte by byte through timing. There is **one** implementation, in [core/seguridad.py](core/seguridad.py) — `api.py` had a second, weaker copy that drifted out of sync.
+
+**Rate limiting covers every route.** `RATE_LIMIT_GLOBAL` (120/minute by default) applies app-wide via the shared limiter in [core/limites.py](core/limites.py); `/smartier/ingerir` and `/poller/ejecutar` take a stricter 6/minute because they trigger work against external systems and burn Smartier's 5 req/s quota. Previously only `/odoo` was limited, leaving the API key brute-forceable through the other twelve routes. Note slowapi requires a `request: Request` parameter on any decorated endpoint.
+
+**Whitelists are re-read per request** (an HTTP middleware calls `recargar_whitelists()`), so tightening `ALLOWED_MODELS` during an incident takes effect without a restart — they used to be frozen at import. `/odoo` is **read-only** by default: `create`/`write`/`unlink` there would let a key holder delete invoices and journal entries, bypassing the middleware's idempotency and audit trail. Writes go through the business endpoints, which log every operation.
+
+**500s return a generic message.** The exception text goes to the log, never to the client — it can carry paths, table names or connection-string fragments.
+
+
+
 Security layers, all `.env`-driven and **no-ops when their var is empty**: `API_KEY` (empty → endpoint unprotected, dev mode), `ALLOWED_MODELS` / `ALLOWED_METHODS` (comma-separated whitelists, enforced inside `OdooRequest`'s `field_validator`s → 422), rate limit fixed at `60/minute` per IP (slowapi).
 
 Error mapping: `401` bad/missing API key · `422` whitelist rejection, `OdooExecutionError`, `SincronizacionError`, `ConciliacionError`, `DescuadreError` · `429` rate limit · `503` `OdooConnectionError` · `400` unknown tenant · `500` other.
