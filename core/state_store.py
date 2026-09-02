@@ -136,7 +136,14 @@ def marcar_estado(
         if mapa is None:
             raise KeyError(f"No existe mapeo para {entidad}/{id_origen}")
         mapa.estado = estado.value
-        mapa.error = error if estado == EstadoSync.ERROR else None
+        # El texto se conserva en ERROR y en PENDIENTE: un registro pendiente
+        # necesita explicar QUE le falta (p.ej. un cliente creado en Odoo pero
+        # sin RIF, que todavia no se puede facturar). En los demas estados se
+        # limpia, porque ya no hay nada que advertir.
+        if estado in (EstadoSync.ERROR, EstadoSync.PENDIENTE):
+            mapa.error = error
+        else:
+            mapa.error = None
 
 
 def ya_procesado(entidad: str, id_origen: str) -> Optional[int]:

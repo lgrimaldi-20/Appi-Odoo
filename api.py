@@ -23,13 +23,18 @@ from odoo_universal import (
     register_tenant,
     get_tenant,
 )
-from core.state_store import buscar_mapeo, init_db
 
 # ---------------------------------------------------------------------------
 # Configuracion inicial
 # ---------------------------------------------------------------------------
 
+# load_dotenv() va ANTES de importar core.state_store: ese modulo lee
+# DATABASE_URL al importarse y crea el engine con lo que encuentre. Si el .env
+# no se ha cargado todavia, cae en el valor por defecto (control.db) y toda la
+# aplicacion acaba escribiendo en una base distinta de la configurada.
 load_dotenv()
+
+from core.state_store import buscar_mapeo, init_db  # noqa: E402  (tras load_dotenv)
 
 logging.basicConfig(
     level=logging.INFO,

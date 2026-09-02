@@ -144,6 +144,7 @@ _PANEL_HTML = r"""<!doctype html>
   .gate { max-width:380px; margin:80px auto; background:var(--panel); border:1px solid var(--border);
     border-radius:12px; padding:28px; text-align:center; }
   .gate input { width:100%; margin:14px 0; }
+  .warn-txt { color: var(--proc); }
   .hide { display:none; }
 </style>
 </head>
@@ -196,7 +197,7 @@ _PANEL_HTML = r"""<!doctype html>
     <table>
       <thead><tr>
         <th>Estado</th><th>Entidad</th><th>ID origen</th><th>Modelo Odoo</th>
-        <th>ID Odoo</th><th>Actualizado</th><th>Error</th>
+        <th>ID Odoo</th><th>Actualizado</th><th>Observaciones</th>
       </tr></thead>
       <tbody id="sync-body"></tbody>
     </table>
@@ -337,7 +338,7 @@ async function cargarSync(){
     <td class="muted">${esc(m.model_odoo)}</td>
     <td class="mono">${m.id_odoo??""}</td>
     <td class="muted">${fecha(m.actualizado)}</td>
-    <td class="err-txt">${esc(m.error)}</td>
+    <td class="${m.estado==='ERROR'?'err-txt':'warn-txt'}">${esc(m.error)}</td>
   </tr>`).join("");
 }
 
