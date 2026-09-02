@@ -448,3 +448,166 @@ Si el control de duplicados dependiera de un filtro del lado de Smartier
 Por eso la idempotencia vive en el `sync_map` del middleware y no en la consulta:
 aunque la API devuelva de más, `sincronizar_entidad` consulta el estado antes de
 tocar Odoo y no duplica.
+
+---
+
+## 16. Aportes del documento "Migración Smartier a Odoo 17" **[v2.1]**
+
+Documento externo de 15 páginas, orientado a **carga inicial por importación**
+(124 campos, orden de carga por bloques). Es complementario a este: aquel resuelve
+*cómo migrar el histórico una vez*; este, *cómo sincronizar día a día por API*.
+Sus hallazgos se han verificado contra el código y se incorporan aquí.
+
+### 16.1 Verificado y confirmado
+
+| Afirmación | Comprobación |
+|---|---|
+| `tax_today` congela la tasa en cada documento | ✅ `account_dual_currency/models/account_move.py:36` |
+| El módulo dual **invierte** `rate` / `inverse_rate` | ✅ el propio código lo comenta: *"el override de `_compute_current_rate` intercambia `rate`/`inverse_rate`"* (`res_currency.py:369-371`) |
+| `wh_iva_rate` arranca en 0, no en 75 | ✅ typo `dafault` — ya documentado en §2.2 |
+| `is_iva_journal`, `is_islr_journal`, `default_iva_account`, `default_islr_account` | ✅ existen en `account.journal` |
+| `type_tax` es **obligatorio** y no existe en Odoo estándar | ✅ `required=True` en `account_tax.py:27-29` |
+| `nro_ctrl` lleva correlativo propio y se auditan los saltos | ✅ `account.control.number.log` + `account.control.sequence.rule` |
+
+### 16.2 Corrección: el espejo `rif` → `vat` **no aplica por API**
+
+El documento dice que `vat` *"el módulo lo espeja desde `rif` automáticamente,
+no hace falta cargarlo aparte"*. **Cierto solo en la interfaz.** El espejo es un
+`@api.onchange('rif')` (`res_partner.py:248-253`), y los `onchange` **no se
+disparan** en un `create`/`write` por JSON-RPC.
+
+Consecuencia para el middleware: hay que escribir **`vat` y `rif` explícitamente**,
+los dos. Si solo se manda `rif`, `vat` queda vacío y la deduplicación por `vat`
+—que es la llave primaria de nuestro mapeo (§2.1)— deja de encontrar al contacto.
+
+Relacionado: las validaciones de formato y duplicado de RIF (`validate_rif_er`,
+`validate_rif_duplicate`) están **definidas pero comentadas** en `create()` y
+`write()`. Es decir, la localización **no valida el formato del RIF por API**.
+Esa validación tiene que hacerla el middleware si se quiere.
+
+### 16.3 Lo que este informe incorpora
+
+**Campos que faltaban en nuestro mapeo** (tabla completa en §16.5):
+
+- `account.journal`: `is_iva_journal` / `is_islr_journal` y sus cuentas. Sin
+  marcarlos, los diarios **no se pueden seleccionar** en la ficha del contacto.
+- `account.tax`: `type_tax` (obligatorio) y `appl_type` (`exento`, `sdcf`,
+  `general`, `reducido`, `adicional`), del que dependen **las columnas del libro
+  de compra/venta**.
+- `account.move.line`: `concept_id` → `account.wh.islr.concept`, para el ISLR.
+- `res.partner`: `property_account_receivable_id` / `property_account_payable_id`
+  y `supplier_rank`.
+- `account.move`: `tax_today` — **crítico**, ver abajo.
+
+**Campos calculados que NUNCA se deben enviar.** Aviso valioso: mandarlos no
+sirve de nada y puede dejar valores que no cuadren con lo que Odoo recalcula.
+
+| Modelo | Campos |
+|---|---|
+| `account.move` | `amount_total`, `amount_untaxed`, `amount_tax`, sus variantes `_usd`, `amount_residual` |
+| `account.move.line` | `debit_usd`, `credit_usd`, `balance_usd`, `price_subtotal`, `price_total`, `price_unit_usd` |
+| `res.partner` | `total_due`, `total_overdue` |
+| `account.move` | `wh_iva_id`, `islr_wh_doc_id` — se generan al procesar la retención dentro de Odoo |
+
+Nuestro flujo ya cumple esto: `mappings.yaml` envía solo `invoice_line_ids` con
+cantidad y precio, y deja que Odoo calcule los totales. La validación posterior
+(`core/impuestos.py`) **compara** `amount_total` contra el total de origen; no lo
+escribe.
+
+### 16.4 `tax_today`: el riesgo que no teníamos identificado
+
+> *"Cada factura guarda su propia tasa en `tax_today` al momento de crearse. Si se
+> importan facturas viejas sin ese campo, todas toman la tasa del día de la
+> importación y los montos en dólares quedan mal."*
+
+Esto **también afecta al flujo diario**, no solo a la migración. Si una nota de
+entrega de Smartier se factura con retraso (se encoló ayer, el poller la procesa
+hoy), la factura tomaría la tasa de **hoy** en lugar de la de la fecha del
+documento. Con la volatilidad del bolívar, la diferencia no es menor.
+
+**Acción pendiente:** cuando `account_dual_currency` esté instalado, añadir
+`tax_today` al mapeo de `factura` en `mappings.yaml`, alimentado desde la fecha
+de la nota de entrega. Hoy no se puede: el campo no existe sin ese módulo.
+
+### 16.5 Campos por bloque — complemento al §12
+
+Consolidado de ambos documentos. **Negrita** = aporta el documento externo.
+
+**`res.partner`** — además de §2.2:
+
+| Campo | Pri. | Nota |
+|---|---|---|
+| **`property_account_receivable_id`** | IMP | Cuenta por cobrar; si se omite toma la del plan |
+| **`property_account_payable_id`** | IMP | Cuenta por pagar |
+| **`supplier_rank`** | IMP | `1` en proveedores (nosotros ya ponemos `customer_rank`) |
+| **`property_payment_term_id`** | REC | Condiciones de pago |
+| `identification_id` | OBL si es persona | Cédula/pasaporte |
+| `vat` **y** `rif` | OBL | **Ambos**, ver §16.2 |
+
+**`account.journal`** — bloque que no teníamos:
+
+| Campo | Pri. | Nota |
+|---|---|---|
+| **`is_iva_journal`** | IMP | Sin esto el diario no aparece en el contacto |
+| **`is_islr_journal`** | IMP | Ídem para ISLR |
+| **`default_iva_account`** | IMP | Cuenta contable de la retención de IVA |
+| **`default_islr_account`** | IMP | Cuenta contable de la retención de ISLR |
+
+**`account.tax`** — además de §12.4:
+
+| Campo | Pri. | Nota |
+|---|---|---|
+| **`type_tax`** | **OBL** | `iva` o `municipal`. `required=True`, no existe en Odoo estándar |
+| **`appl_type`** | IMP | `exento`/`sdcf`/`general`/`reducido`/`adicional` — define las columnas del libro |
+| **`country_id`** | OBL | Venezuela |
+| **`invoice_repartition_line_ids`** | IMP | Reparto contable; conviene copiar de un impuesto existente |
+
+**`account.move`** (factura) — además de §12.1:
+
+| Campo | Pri. | Nota |
+|---|---|---|
+| **`tax_today`** | IMP | Tasa **del día de la factura**, no de hoy (§16.4) |
+| **`invoice_date_due`** | IMP | Vencimiento, para la cobranza |
+| `nro_ctrl` | IMP | Número de Control, correlativo propio auditado |
+| **`state`** | REC | Cargar en `draft` y publicar en lote tras cuadrar |
+
+**`account.move.line`**:
+
+| Campo | Pri. | Nota |
+|---|---|---|
+| **`concept_id`** | REC | `account.wh.islr.concept`, solo si hay retención ISLR |
+| **`tax_ids`** | IMP | Sin esto no hay IVA y los libros salen incompletos |
+
+### 16.6 Lo que ese documento asume y aquí no aplica
+
+Está escrito para **importación por CSV desde la interfaz de Odoo**; nuestro flujo
+es **JSON-RPC continuo**. Dos consecuencias:
+
+1. **"El ID externo es la red de seguridad"** — propone `smartier.cliente_1234` en
+   la columna de ID externo (`ir.model.data`). Es el equivalente, para importación
+   CSV, de lo que nosotros resolvemos con `sync_map` (§11). **No hacen falta las
+   dos cosas**; nuestra vía además sobrevive a que alguien edite el campo en Odoo.
+
+2. **"Importar en borrador y publicar después"** — sensato para una carga masiva
+   que hay que cuadrar contra el sistema anterior. En el flujo diario,
+   `crear_factura` crea y postea en la misma operación, con validación de totales
+   (`core/impuestos.py`) y rollback lógico si el posteo falla. Son estrategias
+   distintas para problemas distintos; ninguna sustituye a la otra.
+
+### 16.7 Orden de carga (si se hace migración histórica)
+
+Del documento externo, y es correcto. Solo tiene sentido si además del flujo
+diario se decide migrar el histórico contable:
+
+```
+1. Plan de cuentas   →  2. Contactos    →  3. Diarios
+4. Impuestos         →  5. Tasas        →  6. Productos
+7. Asiento apertura  →  8. Facturas     →  9. Pagos  →  10. Conciliación
+```
+
+> **Verificación final:** el balance de comprobación de Odoo debe coincidir con el
+> de Smartier a la fecha de corte, cuenta por cuenta, **antes** de publicar.
+
+**Decisión pendiente:** ¿se migra el histórico contable, o el proyecto arranca
+desde cero en Odoo con solo el flujo diario? Hoy hay **0 facturas** en la
+instancia. Cambia el alcance por completo y no está definido (§14, pregunta 3).
