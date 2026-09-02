@@ -43,6 +43,11 @@ from odoo_universal import (  # noqa: E402
 APLICAR = "--aplicar" in sys.argv
 PREFIJO = "SMARTIER-"
 
+# Estados de Smartier con efecto en Odoo. Ver _estado_odoo(): cualquier otro
+# valor deja el producto activo y vendible.
+ESTADO_DESHABILITADO = "Deshabilitado"
+ESTADO_BORRADOR = "Borrador"
+
 # Entidad del state store: hace visible en el panel la carga del catalogo, que
 # de otro modo solo dejaria rastro dentro de Odoo.
 ENTIDAD = "producto"
@@ -84,14 +89,41 @@ def _tax_por_alicuota(odoo, porcentaje: float, cache: dict) -> int | None:
     return nuevo
 
 
+def _estado_odoo(producto: dict) -> tuple[bool, bool]:
+    """
+    Traduce el Estado de Smartier a (active, sale_ok) de Odoo.
+
+        Disponible     -> activo y vendible
+        Borrador       -> activo pero NO vendible (existe, aun no se vende)
+        Deshabilitado  -> archivado
+
+    'Deshabilitado' se comprueba de forma explicita y todo lo demas queda
+    ACTIVO a proposito: si Smartier anade manana un estado que hoy no
+    conocemos, el producto sigue visible en Odoo en vez de archivarse solo. Un
+    producto de mas se ve y se corrige; uno archivado por error desaparece de
+    las busquedas y del catalogo sin que nadie lo note.
+    """
+    estado = str(producto.get("Estado") or "").strip()
+    if estado == ESTADO_DESHABILITADO:
+        return False, False
+    if estado == ESTADO_BORRADOR:
+        return True, False
+    return True, True
+
+
 def _valores(producto: dict, tax_id: int | None) -> dict:
     """Traduce un producto de Smartier a los campos de product.product."""
+    activo, vendible = _estado_odoo(producto)
     valores = {
         "name": producto.get("Nombre") or f"Producto {producto['Id']}",
         "default_code": f"{PREFIJO}{producto['Id']}",
         # Servicio: Odoo no lleva inventario propio (Opcion A del documento).
         "type": "service",
-        "sale_ok": True,
+        # Estado de Smartier -> visibilidad en Odoo. Un producto en borrador
+        # existe pero no puede facturarse todavia; uno deshabilitado se archiva
+        # (no se borra: conserva su historial en facturas anteriores).
+        "active": activo,
+        "sale_ok": vendible,
         "purchase_ok": False,
         "description_sale": f"Tipo Smartier: {producto.get('Tipo', '-')}",
     }
@@ -164,6 +196,11 @@ def main() -> int:
             existente = odoo.execute(
                 "product.product", "search_read", [["default_code", "=", codigo]],
                 fields=["id"], limit=1,
+                # active_test=False: Odoo excluye los archivados de cualquier
+                # busqueda por defecto. Sin esto, un producto que pasara a
+                # 'Deshabilitado' se archivaria y en la pasada siguiente no se
+                # encontraria, creando un DUPLICADO con el mismo default_code.
+                context={"active_test": False},
             )
             if existente:
                 if APLICAR:

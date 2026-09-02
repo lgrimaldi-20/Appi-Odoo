@@ -50,6 +50,13 @@ PREFIJO_REF = "SMARTIER-"
 # invisible que solo deja rastro en Odoo.
 ENTIDAD = "cliente"
 
+# Estado de Smartier que archiva el contacto en Odoo. Ver _activo(): se
+# comprueba este valor concreto, no la ausencia de 'Habilitado'.
+ESTADO_DESHABILITADO = "Deshabilitado"
+
+# Tipo de Smartier -> company_type de Odoo.
+TIPO_COMPANY_TYPE = {"Contacto": "person", "Empresa": "company"}
+
 NOTA_SIN_RIF = (
     "[Sincronizado desde Smartier] PENDIENTE DE VALIDACION FISCAL: "
     "este contacto no tiene RIF en Smartier. Odoo rechazara su factura "
@@ -71,11 +78,16 @@ def _buscar_en_odoo(odoo, cliente: dict):
     Prioriza el RIF; si no hay, usa la referencia externa con el Id de Smartier.
     Nunca empareja por nombre: varia demasiado para ser fiable.
     """
+    # active_test=False en ambas busquedas: Odoo oculta los archivados por
+    # defecto. Sin esto, un contacto que pasara a 'Deshabilitado' se archivaria
+    # y la pasada siguiente no lo encontraria, creando un DUPLICADO.
+    sin_filtro_activo = {"active_test": False}
+
     rif = _rif(cliente)
     if rif:
         hallados = odoo.execute(
             "res.partner", "search_read", [["vat", "=", rif]],
-            fields=["id", "name"], limit=1,
+            fields=["id", "name"], limit=1, context=sin_filtro_activo,
         )
         if hallados:
             return hallados[0]["id"], f"RIF {rif}"
@@ -83,11 +95,24 @@ def _buscar_en_odoo(odoo, cliente: dict):
     ref = f"{PREFIJO_REF}{cliente['Id']}"
     hallados = odoo.execute(
         "res.partner", "search_read", [["ref", "=", ref]],
-        fields=["id", "name"], limit=1,
+        fields=["id", "name"], limit=1, context=sin_filtro_activo,
     )
     if hallados:
         return hallados[0]["id"], f"referencia {ref}"
     return None, None
+
+
+def _activo(cliente: dict) -> bool:
+    """
+    Traduce el Estado de Smartier al archivado de Odoo (res.partner.active).
+
+    Solo 'Deshabilitado' archiva. Se comprueba el valor NEGATIVO en vez de dar
+    por bueno 'Habilitado' a proposito: si Smartier anade manana un estado
+    nuevo que hoy no conocemos, el contacto queda activo y visible en Odoo, no
+    archivado en silencio. Un falso activo se ve y se corrige; un archivado por
+    error desaparece de las busquedas y nadie lo nota.
+    """
+    return str(cliente.get("Estado") or "").strip() != ESTADO_DESHABILITADO
 
 
 def _valores(cliente: dict) -> dict:
@@ -98,14 +123,24 @@ def _valores(cliente: dict) -> dict:
         "ref": f"{PREFIJO_REF}{cliente['Id']}",
         "customer_rank": 1,          # marca el rol de CLIENTE
         "comment": NOTA_CON_RIF if rif else NOTA_SIN_RIF,
+        # Estado de Smartier -> archivado de Odoo. Un contacto dado de baja en
+        # el origen deja de aparecer en las busquedas de Odoo, pero se conserva
+        # con su historial: 'active' archiva, no borra.
+        "active": _activo(cliente),
     }
     if cliente.get("Email"):
         valores["email"] = cliente["Email"]
     if rif:
         valores["vat"] = rif
-    # company_type: la localizacion venezolana exige 'company' para facturar a
-    # empresas. Sin RazonSocial se asume persona, que es lo que dice Smartier.
-    valores["company_type"] = "company" if cliente.get("RazonSocial") else "person"
+    # company_type: Smartier ya distingue Contacto/Empresa, asi que se usa ese
+    # dato en vez de deducirlo de si hay RazonSocial (un contacto puede tener
+    # razon social sin ser empresa). Se cae en RazonSocial solo si el Tipo
+    # viniera vacio.
+    tipo = str(cliente.get("Tipo") or "").strip()
+    if tipo in TIPO_COMPANY_TYPE:
+        valores["company_type"] = TIPO_COMPANY_TYPE[tipo]
+    else:
+        valores["company_type"] = "company" if cliente.get("RazonSocial") else "person"
     return valores
 
 
