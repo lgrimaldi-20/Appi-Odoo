@@ -207,3 +207,99 @@ class TestDedupEncuentraArchivados:
         fuente = inspect.getsource(productos_mod.main)
         assert '"active_test": False' in fuente, \
             "la dedup de productos debe incluir los archivados"
+
+
+# ---------------------------------------------------------------------------
+# Campos fiscales: neutros al crear, intocables al actualizar
+# ---------------------------------------------------------------------------
+
+
+class TestCamposFiscales:
+    """
+    l10n_ve_full declara wh_iva_agent e islr_withholding_agent con default=True.
+    Un contacto creado por el script quedaria marcado como agente de retencion
+    sin que nadie lo decidiera, y Odoo empezaria a retenerle.
+
+    Regla adoptada: NEUTRO al crear, INTOCABLE al actualizar. Retener de menos
+    se detecta y se corrige; retener a quien no corresponde es dinero ajeno
+    enviado al fisco.
+    """
+
+    def _odoo(self, con_localizacion: bool):
+        odoo = MagicMock()
+        odoo.execute.return_value = 1 if con_localizacion else 0
+        return odoo
+
+    def test_al_crear_nace_sin_retencion(self, clientes_mod):
+        clientes_mod._LOCALIZACION_VE = None
+        fiscales = clientes_mod._campos_fiscales_iniciales(self._odoo(True))
+
+        assert fiscales["wh_iva_agent"] is False
+        assert fiscales["islr_withholding_agent"] is False
+        assert fiscales["wh_iva_rate"] == 0.0
+
+    def test_sin_localizacion_no_se_envia_nada(self, clientes_mod):
+        """
+        Sin l10n_ve_full esos campos NO existen: mandarlos haria fallar el
+        create entero con un error de campo desconocido.
+        """
+        clientes_mod._LOCALIZACION_VE = None
+        assert clientes_mod._campos_fiscales_iniciales(self._odoo(False)) == {}
+
+    def test_la_actualizacion_no_toca_lo_fiscal(self, clientes_mod):
+        """
+        Lo esencial: contabilidad marca un cliente como agente de retencion y
+        la siguiente pasada del sincronizador NO debe revertirlo.
+        """
+        valores = clientes_mod._valores_actualizacion(_cliente())
+
+        for campo in ("wh_iva_agent", "wh_iva_rate", "islr_withholding_agent",
+                      "islr_exempt", "contribuyente_seniat", "rif",
+                      "agente_retencion_mun", "porc_reten_muni"):
+            assert campo not in valores, \
+                f"{campo} es competencia de contabilidad, no del sincronizador"
+
+    def test_la_actualizacion_si_trae_los_campos_de_negocio(self, clientes_mod):
+        """No tocar lo fiscal no significa dejar de sincronizar lo demas."""
+        valores = clientes_mod._valores_actualizacion(_cliente())
+        for campo in ("name", "ref", "active", "company_type"):
+            assert campo in valores
+
+    def test_el_rif_vacio_no_borra_el_ya_cargado(self, clientes_mod):
+        """
+        Hoy los 3 clientes vienen sin RIF. Si contabilidad lo carga a mano en
+        Odoo, la siguiente pasada no debe vaciarlo: 'vat' solo se envia cuando
+        Smartier trae valor.
+        """
+        sin_rif = clientes_mod._valores_actualizacion(
+            _cliente(Documento={"Tipo": 6, "Contenido": None})
+        )
+        assert "vat" not in sin_rif
+
+        con_rif = clientes_mod._valores_actualizacion(
+            _cliente(Documento={"Tipo": 6, "Contenido": "J-40123456-7"})
+        )
+        assert con_rif["vat"] == "J-40123456-7"
+
+    def test_se_detecta_por_el_campo_no_por_el_modulo(self, clientes_mod):
+        """
+        Importa si el campo se puede escribir, no como se llame el addon que lo
+        trae. Se consulta ir.model.fields sobre wh_iva_agent.
+        """
+        clientes_mod._LOCALIZACION_VE = None
+        odoo = self._odoo(True)
+        clientes_mod._tiene_localizacion_ve(odoo)
+
+        args = odoo.execute.call_args[0]
+        assert args[0] == "ir.model.fields"
+        assert ["name", "=", "wh_iva_agent"] in args[2]
+
+    def test_ante_un_fallo_se_asume_que_no_hay_localizacion(self, clientes_mod):
+        """Un error consultando no debe romper el create con campos que no existen."""
+        from odoo_universal import OdooExecutionError
+
+        clientes_mod._LOCALIZACION_VE = None
+        odoo = MagicMock()
+        odoo.execute.side_effect = OdooExecutionError("boom")
+
+        assert clientes_mod._tiene_localizacion_ve(odoo) is False

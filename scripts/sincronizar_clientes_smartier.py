@@ -54,6 +54,9 @@ ENTIDAD = "cliente"
 # comprueba este valor concreto, no la ausencia de 'Habilitado'.
 ESTADO_DESHABILITADO = "Deshabilitado"
 
+# Cache de si l10n_ve_full esta instalado. None = todavia sin comprobar.
+_LOCALIZACION_VE = None
+
 # Tipo de Smartier -> company_type de Odoo.
 TIPO_COMPANY_TYPE = {"Contacto": "person", "Empresa": "company"}
 
@@ -102,6 +105,28 @@ def _buscar_en_odoo(odoo, cliente: dict):
     return None, None
 
 
+def _tiene_localizacion_ve(odoo) -> bool:
+    """
+    True si l10n_ve_full esta instalado (aporta los campos de retencion).
+
+    Se comprueba por la existencia del campo y no por el nombre del modulo:
+    lo que importa es si el campo se puede escribir, no como se llame el addon
+    que lo trae. El resultado se cachea porque no cambia durante la ejecucion.
+    """
+    global _LOCALIZACION_VE
+    if _LOCALIZACION_VE is None:
+        try:
+            _LOCALIZACION_VE = bool(odoo.execute(
+                "ir.model.fields", "search_count",
+                [["model", "=", "res.partner"], ["name", "=", "wh_iva_agent"]],
+            ))
+        except OdooExecutionError:
+            # Ante la duda se asume que NO esta: enviar campos inexistentes
+            # haria fallar el create entero.
+            _LOCALIZACION_VE = False
+    return _LOCALIZACION_VE
+
+
 def _activo(cliente: dict) -> bool:
     """
     Traduce el Estado de Smartier al archivado de Odoo (res.partner.active).
@@ -142,6 +167,50 @@ def _valores(cliente: dict) -> dict:
     else:
         valores["company_type"] = "company" if cliente.get("RazonSocial") else "person"
     return valores
+
+
+def _campos_fiscales_iniciales(odoo) -> dict:
+    """
+    Estado fiscal NEUTRO para un contacto que se crea por primera vez.
+
+    Solo aplica si la localizacion venezolana (l10n_ve_full) esta instalada; si
+    no, estos campos no existen y se devuelve un dict vacio.
+
+    Por que hace falta: el modulo declara wh_iva_agent e islr_withholding_agent
+    con default=True. Un contacto creado por este script quedaria marcado como
+    agente de retencion de IVA e ISLR sin que nadie lo haya decidido, y a partir
+    de ahi Odoo le retendria. Se prefiere lo contrario: nace sin retencion y es
+    contabilidad quien la activa a la vista del RIF y de la designacion del
+    SENIAT. Retener de menos se detecta y se corrige; retener a quien no
+    corresponde es dinero ajeno enviado al fisco.
+
+    Ojo: esto es SOLO para la creacion. En una actualizacion no se tocan (ver
+    _valores_actualizacion): pisarian lo que contabilidad haya configurado.
+    """
+    if not _tiene_localizacion_ve(odoo):
+        return {}
+    return {
+        "wh_iva_agent": False,          # ¿Es agente de retencion de IVA?
+        "wh_iva_rate": 0.0,             # % de retencion (el modulo NO lo fija;
+                                        # su 'default' tiene un typo: 'dafault')
+        "islr_withholding_agent": False,  # ¿Agente de retencion de ISLR?
+    }
+
+
+def _valores_actualizacion(cliente: dict) -> dict:
+    """
+    Campos a escribir sobre un contacto que YA existe en Odoo.
+
+    Se excluyen los campos fiscales a proposito: son competencia de
+    contabilidad (RIF, condicion de agente de retencion, porcentajes, tipo de
+    contribuyente) y una pasada de sincronizacion no debe revertir lo que
+    alguien configuro a mano. Smartier tampoco los conoce: su API expone 8
+    campos y ninguno es fiscal.
+
+    'vat' es la excepcion: viene de Smartier (Documento.Contenido) y solo se
+    envia cuando trae valor, nunca vacio, para no borrar un RIF ya cargado.
+    """
+    return _valores(cliente)
 
 
 def _registrar(cliente: dict, id_odoo, accion: str, detalle: str,
@@ -188,6 +257,13 @@ def main() -> int:
         print(f"[X] No se pudo conectar a Odoo: {e}")
         return 1
     print(f"Odoo conectado (uid={odoo.uid})")
+    if _tiene_localizacion_ve(odoo):
+        print("Localizacion venezolana detectada: los contactos NUEVOS se crean")
+        print("  sin retencion (wh_iva_agent=False, islr_withholding_agent=False).")
+        print("  Contabilidad activa la retencion que corresponda a cada uno.")
+    else:
+        print("Sin localizacion venezolana (l10n_ve_full): no hay campos de")
+        print("  retencion que fijar.")
     state_store.init_db()
 
     cli = SmartierClient()
@@ -215,14 +291,26 @@ def main() -> int:
                 if APLICAR:
                     # Solo se anade el rol de cliente y se refrescan los datos;
                     # nunca se pisa un contacto que ya existia por otra via.
-                    odoo.execute("res.partner", "write", [existente], valores)
+                    # Actualizacion: SIN campos fiscales. Contabilidad es quien
+                    # decide la condicion de agente de retencion y sus
+                    # porcentajes; una pasada del sincronizador no debe
+                    # revertirlo.
+                    odoo.execute("res.partner", "write", [existente],
+                                 _valores_actualizacion(c))
                     _registrar(c, existente, "actualizar",
                                f"vinculado por {motivo}", rif)
                 print(f"  = {etiqueta} ya existe (por {motivo}) -> id={existente}")
                 actualizados += 1
             else:
                 if APLICAR:
-                    nuevo = odoo.execute("res.partner", "create", valores)
+                    # Creacion: se fija un estado fiscal NEUTRO explicito. Sin
+                    # esto, los default=True del modulo venezolano marcarian al
+                    # contacto como agente de retencion de IVA e ISLR nada mas
+                    # nacer, sin que nadie lo haya decidido.
+                    nuevo = odoo.execute(
+                        "res.partner", "create",
+                        {**valores, **_campos_fiscales_iniciales(odoo)},
+                    )
                     _registrar(c, nuevo, "crear", valores["name"], rif)
                     print(f"  + {etiqueta} creado -> id={nuevo}")
                 else:

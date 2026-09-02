@@ -45,5 +45,11 @@ Informe-Integracion-Smartier-Odoo.docx
 # Otro proyecto, clonado dentro de esta carpeta por comodidad
 KZA-lending/
 
+# Addons de Odoo para la instancia de Turicopy (repos git aparte, anidados:
+# turicopy-pruebas contiene a su vez el clon de SmartAutomatai/sma_l10n_ve).
+# Son modulos que se despliegan en Odoo.sh, no codigo del middleware; y
+# versionar un repo dentro de otro sin declararlo como submodulo confunde a git.
+turicopy-pruebas/
+
 # Notas de trabajo locales (el sufijo .local marca lo que no se versiona)
 *.local.md
