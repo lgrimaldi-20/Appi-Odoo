@@ -136,7 +136,8 @@ _PANEL_HTML = r"""<!doctype html>
   .flujo3d-head { display:flex; gap:12px; align-items:center; margin-bottom:8px; }
   .flujo3d-head .titulo { font-weight:600; }
   .flujo3d-head .mini { margin-left:auto; padding:4px 10px; font-size:12px; }
-  #lienzo3d { height:260px; border-radius:8px; overflow:hidden; cursor:grab; }
+  #lienzo3d { height:420px; border-radius:10px; overflow:hidden; cursor:grab;
+    background:radial-gradient(ellipse at 50% 40%, #16233c 0%, #0d1626 70%); }
   #lienzo3d.oculto { display:none; }
   #lienzo3d:active { cursor:grabbing; }
   .leyenda { display:flex; gap:18px; flex-wrap:wrap; padding:8px 2px 2px;
@@ -525,13 +526,33 @@ async function cargarCola(){
 // ---------------------------------------------------------------------------
 
 const ETAPAS = [
-  { id:"smartier", nombre:"Smartier",  x:-9, color:0x8b5cf6 },
-  { id:"cola",     nombre:"Cola",      x:-3, color:0x38bdf8 },
-  { id:"middle",   nombre:"Middleware",x: 3, color:0x22c55e },
-  { id:"odoo",     nombre:"Odoo",      x: 9, color:0xf59e0b },
+  { id:"smartier", nombre:"Smartier",  x:-10.5, color:0x8b5cf6 },
+  { id:"cola",     nombre:"Cola",      x:-3.5, color:0x38bdf8 },
+  { id:"middle",   nombre:"Middleware",x:  3.5, color:0x22c55e },
+  { id:"odoo",     nombre:"Odoo",      x: 10.5, color:0xf59e0b },
 ];
 
 let esc3d = null;   // {scene, camera, renderer, nodos, particulas, ...}
+
+// Texto dentro de la escena. Se dibuja en un canvas 2D y se pega como sprite,
+// que siempre mira a la camara: asi la etiqueta sigue legible por mucho que se
+// gire el conjunto.
+function etiqueta3d(texto, color){
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 64;
+  const g = c.getContext("2d");
+  g.font = "600 30px system-ui, -apple-system, Segoe UI, sans-serif";
+  g.fillStyle = "#" + color.toString(16).padStart(6, "0");
+  g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(texto, 128, 32);
+  const tex = new THREE.CanvasTexture(c);
+  tex.minFilter = THREE.LinearFilter;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map:tex, transparent:true, depthWrite:false,
+  }));
+  sp.scale.set(3.4, .85, 1);
+  return sp;
+}
 
 function init3d(){
   const cont = document.getElementById("lienzo3d");
@@ -542,8 +563,8 @@ function init3d(){
 
   const scene = new THREE.Scene();
   const ancho = cont.clientWidth || 800, alto = cont.clientHeight || 260;
-  const camera = new THREE.PerspectiveCamera(42, ancho/alto, 0.1, 200);
-  camera.position.set(0, 3.2, 18);
+  const camera = new THREE.PerspectiveCamera(38, ancho/alto, 0.1, 200);
+  camera.position.set(0, 4.5, 21);
   camera.lookAt(0, 0, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
@@ -551,42 +572,80 @@ function init3d(){
   renderer.setSize(ancho, alto);
   cont.appendChild(renderer.domElement);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-  const luz = new THREE.DirectionalLight(0xffffff, 0.9);
-  luz.position.set(4, 8, 10);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.42));
+  const luz = new THREE.DirectionalLight(0xffffff, 1.0);
+  luz.position.set(5, 9, 11);
   scene.add(luz);
+  // Luz de relleno fria desde el lado opuesto: sin ella la mitad en sombra
+  // queda negra y los nodos se ven planos.
+  const relleno = new THREE.DirectionalLight(0x88bbff, 0.45);
+  relleno.position.set(-8, -3, 6);
+  scene.add(relleno);
 
-  // --- Nodos: una esfera por etapa, con un halo que late ---
+  // --- Nodos ---
+  // Un nucleo solido con dos anillos concentricos, no una esfera facetada.
+  // Los anillos dan un lenguaje mas tecnico -- se leen como una estacion del
+  // pipeline, no como una burbuja -- y al girar en planos distintos aportan
+  // profundidad sin necesidad de que el nodo sea grande.
   const nodos = {};
   ETAPAS.forEach(e=>{
     const grupo = new THREE.Group();
     grupo.position.x = e.x;
 
     const esfera = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(1.1, 2),
+      new THREE.SphereGeometry(1.05, 48, 48),
       new THREE.MeshStandardMaterial({
-        color:e.color, roughness:.35, metalness:.5,
-        emissive:e.color, emissiveIntensity:.25,
+        color:e.color, roughness:.25, metalness:.65,
+        emissive:e.color, emissiveIntensity:.3,
       })
     );
     grupo.add(esfera);
 
+    // Anillo exterior: marca el limite del nodo con una linea nitida.
+    const anillo = new THREE.Mesh(
+      new THREE.TorusGeometry(1.75, .035, 12, 96),
+      new THREE.MeshBasicMaterial({ color:e.color, transparent:true, opacity:.75 })
+    );
+    anillo.rotation.x = Math.PI / 2.6;
+    grupo.add(anillo);
+
+    // Anillo interior en plano contrario: al girar los dos, la interseccion
+    // sugiere volumen mucho mejor que un halo difuso.
+    const anillo2 = new THREE.Mesh(
+      new THREE.TorusGeometry(1.4, .02, 10, 80),
+      new THREE.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:.28 })
+    );
+    anillo2.rotation.x = Math.PI / 2.6;
+    anillo2.rotation.y = Math.PI / 3;
+    grupo.add(anillo2);
+
+    // Resplandor suave, muy tenue: solo separa el nodo del fondo.
     const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(1.5, 24, 24),
-      new THREE.MeshBasicMaterial({ color:e.color, transparent:true, opacity:.10 })
+      new THREE.SphereGeometry(2.1, 32, 32),
+      new THREE.MeshBasicMaterial({
+        color:e.color, transparent:true, opacity:.07,
+        side:THREE.BackSide,
+      })
     );
     grupo.add(halo);
 
+    // Etiqueta con el nombre, dentro de la escena: leerla en la escena evita
+    // tener que cruzar la mirada con la leyenda de abajo.
+    const etiqueta = etiqueta3d(e.nombre, e.color);
+    etiqueta.position.y = -2.6;
+    grupo.add(etiqueta);
+
     scene.add(grupo);
-    nodos[e.id] = { grupo, esfera, halo, base:e, valor:0, error:false };
+    nodos[e.id] = { grupo, esfera, halo, anillo, anillo2, etiqueta,
+                    base:e, valor:0, error:false };
   });
 
   // --- Tuberias entre etapas ---
   for(let i=0; i<ETAPAS.length-1; i++){
     const a = ETAPAS[i], b = ETAPAS[i+1];
     const tubo = new THREE.Mesh(
-      new THREE.CylinderGeometry(.06, .06, b.x-a.x, 8),
-      new THREE.MeshBasicMaterial({ color:0x334155, transparent:true, opacity:.5 })
+      new THREE.CylinderGeometry(.02, .02, b.x-a.x, 6),
+      new THREE.MeshBasicMaterial({ color:0x3b4a63, transparent:true, opacity:.45 })
     );
     tubo.rotation.z = Math.PI/2;
     tubo.position.x = (a.x + b.x)/2;
@@ -595,7 +654,7 @@ function init3d(){
 
   // --- Particulas: cada una es un registro viajando por el pipeline ---
   const particulas = [];
-  const geoP = new THREE.SphereGeometry(.13, 8, 8);
+  const geoP = new THREE.SphereGeometry(.16, 10, 10);
   for(let i=0; i<60; i++){
     const m = new THREE.Mesh(geoP, new THREE.MeshBasicMaterial({ color:0x38bdf8 }));
     m.visible = false;
@@ -637,12 +696,12 @@ function entrada3d(){
   ETAPAS.forEach((e, i)=>{
     const n = esc3d.nodos[e.id];
     n.grupo.scale.setScalar(0);
-    n.grupo.position.y = 6;
+    n.grupo.position.y = 3.5;
     anime.animate(n.grupo.position, {
-      y: 0, duration: 1100, delay: i * 130, ease: "outBounce",
+      y: 0, duration: 900, delay: i * 110, ease: "outCubic",
     });
     anime.animate(n.grupo.scale, {
-      x: 1, y: 1, z: 1, duration: 900, delay: i * 130, ease: "outElastic(1, .6)",
+      x: 1, y: 1, z: 1, duration: 850, delay: i * 110, ease: "outBack(1.4)",
     });
   });
 }
@@ -656,14 +715,27 @@ function animar3d(){
   esc3d.scene.rotation.y = esc3d.giro + Math.sin(t*.18) * .12;
 
   Object.values(esc3d.nodos).forEach((n, i)=>{
-    n.esfera.rotation.y += .004;
-    n.esfera.rotation.x += .002;
+    n.esfera.rotation.y += .0035;
+
+    // Los dos anillos giran en sentidos opuestos y a distinto ritmo. Es lo que
+    // hace legible el volumen: el cruce entre ambos da la referencia de
+    // profundidad que una esfera sola no ofrece.
+    if(n.anillo)  n.anillo.rotation.z  += .006;
+    if(n.anillo2) n.anillo2.rotation.z -= .010;
+
     // Latido: rapido y marcado si hay errores, sereno si todo va bien.
-    const ritmo = n.error ? 6 : 1.6;
-    const amp   = n.error ? .16 : .06;
-    const s = 1 + Math.sin(t*ritmo + i) * amp;
-    n.halo.scale.setScalar(s);
-    n.halo.material.opacity = n.error ? .22 + Math.sin(t*6+i)*.12 : .10;
+    const ritmo = n.error ? 6 : 1.4;
+    const amp   = n.error ? .14 : .04;
+    n.halo.scale.setScalar(1 + Math.sin(t*ritmo + i) * amp);
+    n.halo.material.opacity = n.error ? .18 + Math.sin(t*6+i)*.10 : .07;
+
+    // Un nodo sin datos se apaga: el anillo casi desaparece y se distingue de
+    // un vistazo cual etapa esta inactiva.
+    if(n.anillo){
+      n.anillo.material.opacity = n.valor > 0
+        ? .70 + Math.sin(t*1.4 + i)*.14
+        : .18;
+    }
   });
 
   // Particulas viajando de un nodo al siguiente.
@@ -732,7 +804,7 @@ function actualizar3d(resumen, cola){
     // el sentido en que fluyen los datos.
     anime.animate(n.grupo.scale, {
       x: escala, y: escala, z: escala,
-      duration: 900, delay: i * 70, ease: "outElastic(1, .7)",
+      duration: 800, delay: i * 60, ease: "outBack(1.6)",
     });
     anime.animate(n.esfera.material, {
       emissiveIntensity: brillo, duration: 700, delay: i * 70, ease: "outQuad",
@@ -742,7 +814,7 @@ function actualizar3d(resumen, cola){
     // senal de que algo acaba de llegar ahi, visible aunque no se mire fijo.
     if(cambio && d.valor > previo){
       anime.animate(n.grupo.position, {
-        y: [0, .9, 0], duration: 1100, delay: i * 70, ease: "outQuad",
+        y: [0, .55, 0], duration: 900, delay: i * 60, ease: "outQuad",
       });
     }
   });
