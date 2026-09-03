@@ -153,6 +153,15 @@ def nota_a_registro(nota: dict) -> dict:
         "quantity": cantidad,
         "price_unit": monto,
     }
+    # Referencia del producto en Odoo (default_code = "SMARTIER-<id>"). El
+    # mapper la resuelve a product_id antes de crear la factura.
+    #
+    # Es imprescindible: sin producto, la linea va sin impuestos y Odoo rechaza
+    # el asiento con "Las Lineas de la Factura deben tener un tipo de alicuota
+    # o impuestos". El IVA no se envia desde aqui a proposito -- lo hereda del
+    # producto, que es donde Smartier ya dijo que alicuota le corresponde.
+    if producto.get("Id"):
+        linea["_producto_ref"] = f"SMARTIER-{producto['Id']}"
     if descuento:
         linea["discount"] = descuento
 

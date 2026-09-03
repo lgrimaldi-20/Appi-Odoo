@@ -145,4 +145,48 @@ def mapear(entidad: str, registro: dict, odoo: OdooUniversalAPI) -> dict[str, An
         if fk is not None:
             valores[campo_odoo] = fk
 
+    # 4. Producto de cada linea
+    _resolver_productos_en_lineas(odoo, valores)
+
     return valores
+
+
+def _resolver_productos_en_lineas(odoo: OdooUniversalAPI,
+                                  valores: dict[str, Any]) -> None:
+    """
+    Traduce '_producto_ref' a 'product_id' dentro de las lineas de factura.
+
+    Por que hace falta: una linea sin producto va tambien sin impuestos, y Odoo
+    con la localizacion venezolana rechaza el asiento ("Las Lineas de la
+    Factura deben tener un tipo de alicuota o impuestos"). Enlazando el
+    producto, el IVA lo hereda de su ficha, que es donde ya quedo registrada la
+    alicuota que indico el origen.
+
+    La referencia no encontrada se ignora en silencio a proposito: la linea
+    conserva nombre, cantidad y precio, y el fallo se vera al postear con un
+    mensaje de Odoo mas claro que un error de mapeo aqui.
+    """
+    lineas = valores.get("invoice_line_ids")
+    if not lineas:
+        return
+
+    cache: dict[str, int] = {}
+    for comando in lineas:
+        # Formato de comando Odoo: (0, 0, {...}). Solo interesa la creacion.
+        if not (isinstance(comando, (list, tuple)) and len(comando) == 3):
+            continue
+        datos = comando[2]
+        if not isinstance(datos, dict):
+            continue
+        ref = datos.pop("_producto_ref", None)
+        if not ref or datos.get("product_id"):
+            continue
+
+        if ref not in cache:
+            hallado = odoo.execute(
+                "product.product", "search_read", [["default_code", "=", ref]],
+                fields=["id"], limit=1, context={"active_test": False},
+            )
+            cache[ref] = hallado[0]["id"] if hallado else 0
+        if cache[ref]:
+            datos["product_id"] = cache[ref]
