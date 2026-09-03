@@ -136,6 +136,7 @@ _PANEL_HTML = r"""<!doctype html>
   .flujo3d-head { display:flex; gap:12px; align-items:center; margin-bottom:8px; }
   .flujo3d-head .titulo { font-weight:600; }
   .flujo3d-head .mini { margin-left:auto; padding:4px 10px; font-size:12px; }
+  #lienzo3d canvas { display:block; width:100% !important; height:100% !important; }
   #lienzo3d { height:300px; border-radius:10px; overflow:hidden; cursor:grab;
     background:radial-gradient(ellipse at 50% 40%, #16233c 0%, #0d1626 70%); }
   #lienzo3d.oculto { display:none; }
@@ -693,7 +694,7 @@ function init3d(){
     if(!w || !h) return;                       // aun sin layout: no medir
     esc3d.camera.aspect = w / h;
     esc3d.camera.updateProjectionMatrix();
-    esc3d.renderer.setSize(w, h, false);
+    esc3d.renderer.setSize(w, h);
     encuadrar3d();
   }
   window.addEventListener("resize", ajustarTamano);
@@ -735,14 +736,21 @@ function encuadrar3d(){
   // medio del rectangulo.
   const ESCALA_MAX = 1.9;
   const semiAncho = 10.5 + 1.75 * ESCALA_MAX;  // ~13.8
-  const MARGEN = 1.04;                          // solo un respiro a los lados
+  const MARGEN = 1.30;                          // aire alrededor de la escena
 
-  const fovH = 2 * Math.atan(Math.tan(cam.fov * Math.PI/360) * cam.aspect);
-  const dist = (semiAncho * MARGEN) / Math.tan(fovH / 2);
+  const fovV = cam.fov * Math.PI / 180;
+  const fovH = 2 * Math.atan(Math.tan(fovV / 2) * cam.aspect);
+
+  // Distancia necesaria por ancho y por alto; manda la mayor. Con un lienzo
+  // apaisado suele mandar el ancho, pero en una ventana estrecha el alto pasa
+  // a ser el limite y sin esto los nodos rozarian arriba y abajo.
+  const semiAlto = 3.6;   // nodo escalado, su anillo y la etiqueta de debajo
+  const distH = (semiAncho * MARGEN) / Math.tan(fovH / 2);
+  const distV = (semiAlto  * MARGEN) / Math.tan(fovV / 2);
 
   // Sin tope inferior: acercar la camara "por si acaso" era justo lo que
   // recortaba los nodos de los extremos.
-  cam.position.z = dist;
+  cam.position.z = Math.max(distH, distV);
   cam.updateProjectionMatrix();
 }
 
