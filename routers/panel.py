@@ -136,7 +136,7 @@ _PANEL_HTML = r"""<!doctype html>
   .flujo3d-head { display:flex; gap:12px; align-items:center; margin-bottom:8px; }
   .flujo3d-head .titulo { font-weight:600; }
   .flujo3d-head .mini { margin-left:auto; padding:4px 10px; font-size:12px; }
-  #lienzo3d { height:420px; border-radius:10px; overflow:hidden; cursor:grab;
+  #lienzo3d { height:300px; border-radius:10px; overflow:hidden; cursor:grab;
     background:radial-gradient(ellipse at 50% 40%, #16233c 0%, #0d1626 70%); }
   #lienzo3d.oculto { display:none; }
   #lienzo3d:active { cursor:grabbing; }
@@ -563,9 +563,9 @@ function init3d(){
 
   const scene = new THREE.Scene();
   const ancho = cont.clientWidth || 800, alto = cont.clientHeight || 260;
-  const camera = new THREE.PerspectiveCamera(38, ancho/alto, 0.1, 200);
-  camera.position.set(0, 4.5, 21);
-  camera.lookAt(0, 0, 0);
+  const camera = new THREE.PerspectiveCamera(34, ancho/alto, 0.1, 200);
+  camera.position.set(0, 2.2, 17.5);
+  camera.lookAt(0, -0.2, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -670,9 +670,20 @@ function init3d(){
     esc3d.arrastrando = true; esc3d.ultimoX = ev.clientX;
   });
   window.addEventListener("pointerup", ()=>{ esc3d.arrastrando = false; });
+  // Doble clic: vuelve a la vista frontal.
+  cont.addEventListener("dblclick", ()=>{
+    if(typeof anime !== "undefined"){
+      anime.animate(esc3d, { giro:0, duration:600, ease:"outCubic" });
+    }else{ esc3d.giro = 0; }
+  });
   window.addEventListener("pointermove", ev=>{
     if(!esc3d.arrastrando) return;
-    esc3d.giro += (ev.clientX - esc3d.ultimoX) * .005;
+    // Tope de +-35 grados: mas que eso pone los nodos en fila hacia el
+    // fondo y se pierde la lectura de izquierda a derecha, que es lo que
+    // cuenta el diagrama.
+    const LIM = Math.PI / 5.2;
+    esc3d.giro = Math.max(-LIM, Math.min(LIM,
+      esc3d.giro + (ev.clientX - esc3d.ultimoX) * .004));
     esc3d.ultimoX = ev.clientX;
   });
 
@@ -681,8 +692,10 @@ function init3d(){
     const w = cont.clientWidth || 800, h = cont.clientHeight || 260;
     esc3d.camera.aspect = w/h; esc3d.camera.updateProjectionMatrix();
     esc3d.renderer.setSize(w, h);
+    encuadrar3d();
   });
 
+  encuadrar3d();
   animar3d();
   entrada3d();
   document.getElementById("flujo-estado").textContent = "arrastra para girar";
@@ -691,6 +704,19 @@ function init3d(){
 // Entrada escalonada: los nodos caen desde arriba de izquierda a derecha,
 // siguiendo el sentido del flujo. Da a entender el recorrido antes de que
 // llegue el primer dato.
+// Situa la camara a la distancia justa para que el pipeline entero quepa a lo
+// ancho, sea cual sea el tamano de la ventana. Sin esto, en una pantalla
+// estrecha los nodos de los extremos quedan fuera del encuadre.
+function encuadrar3d(){
+  if(!esc3d) return;
+  const cam = esc3d.camera;
+  const ANCHO_ESCENA = 25;   // de -10.5 a +10.5, mas los anillos y su margen
+  const fovH = 2 * Math.atan(Math.tan(cam.fov * Math.PI/360) * cam.aspect);
+  const dist = (ANCHO_ESCENA / 2) / Math.tan(fovH / 2);
+  cam.position.z = Math.max(dist, 12);
+  cam.updateProjectionMatrix();
+}
+
 function entrada3d(){
   if(typeof anime === "undefined" || !esc3d) return;
   ETAPAS.forEach((e, i)=>{
@@ -712,7 +738,7 @@ function animar3d(){
   const t = performance.now() * .001;
 
   // La escena entera oscila despacio, mas lo que el usuario arrastre.
-  esc3d.scene.rotation.y = esc3d.giro + Math.sin(t*.18) * .12;
+  esc3d.scene.rotation.y = esc3d.giro + Math.sin(t*.18) * .06;
 
   Object.values(esc3d.nodos).forEach((n, i)=>{
     n.esfera.rotation.y += .0035;
