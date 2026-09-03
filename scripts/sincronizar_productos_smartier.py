@@ -48,9 +48,59 @@ PREFIJO = "SMARTIER-"
 ESTADO_DESHABILITADO = "Deshabilitado"
 ESTADO_BORRADOR = "Borrador"
 
+# Cache de si la localizacion aporta account.tax.type_tax. None = sin comprobar.
+_TYPE_TAX = None
+
+# Cache de si existe product.template.list_price_usd (modulo de dualidad).
+_PRECIO_USD = None
+
+# Marcador de precio para satisfacer la validacion del modulo venezolano.
+# NO es una tarifa: Smartier no publica precios de catalogo. Ver _valores().
+PRECIO_MARCADOR = 0.01
+
 # Entidad del state store: hace visible en el panel la carga del catalogo, que
 # de otro modo solo dejaria rastro dentro de Odoo.
 ENTIDAD = "producto"
+
+
+def _tiene_type_tax(odoo) -> bool:
+    """
+    True si la localizacion venezolana aporta account.tax.type_tax.
+
+    Se comprueba por la existencia del campo y no por el nombre del modulo:
+    lo que importa es si se puede escribir. Se cachea porque no cambia durante
+    la ejecucion.
+    """
+    global _TYPE_TAX
+    if _TYPE_TAX is None:
+        try:
+            _TYPE_TAX = bool(odoo.execute(
+                "ir.model.fields", "search_count",
+                [["model", "=", "account.tax"], ["name", "=", "type_tax"]],
+            ))
+        except OdooExecutionError:
+            _TYPE_TAX = False
+    return _TYPE_TAX
+
+
+def _tiene_precio_usd(odoo) -> bool:
+    """
+    True si el modulo de dualidad monetaria aporta list_price_usd.
+
+    Se comprueba por la existencia del campo, no por el nombre del modulo: lo
+    que importa es si se puede escribir. Sin el, mandarlo romperia el create.
+    """
+    global _PRECIO_USD
+    if _PRECIO_USD is None:
+        try:
+            _PRECIO_USD = bool(odoo.execute(
+                "ir.model.fields", "search_count",
+                [["model", "=", "product.template"],
+                 ["name", "=", "list_price_usd"]],
+            ))
+        except OdooExecutionError:
+            _PRECIO_USD = False
+    return _PRECIO_USD
 
 
 def _tax_por_alicuota(odoo, porcentaje: float, cache: dict) -> int | None:
@@ -77,13 +127,21 @@ def _tax_por_alicuota(odoo, porcentaje: float, cache: dict) -> int | None:
         cache[porcentaje] = None
         return None
 
-    nuevo = odoo.execute("account.tax", "create", {
+    valores = {
         "name": f"IVA {porcentaje:g}%",
         "amount": porcentaje,
         "amount_type": "percent",
         "type_tax_use": "sale",
         "description": f"IVA {porcentaje:g}%",
-    })
+    }
+    # La localizacion venezolana declara type_tax con required=True y no
+    # existe en Odoo estandar: sin este campo el create falla con
+    # "The operation cannot be completed: Field: Tipo de Impuesto".
+    # Se envia solo si el campo existe, para no romper una instancia sin
+    # localizacion.
+    if _tiene_type_tax(odoo):
+        valores["type_tax"] = "iva"
+    nuevo = odoo.execute("account.tax", "create", valores)
     cache[porcentaje] = nuevo
     print(f"    impuesto {porcentaje}% -> CREADO (id={nuevo})")
     return nuevo
@@ -111,7 +169,8 @@ def _estado_odoo(producto: dict) -> tuple[bool, bool]:
     return True, True
 
 
-def _valores(producto: dict, tax_id: int | None) -> dict:
+def _valores(producto: dict, tax_id: int | None,
+             precio_usd: bool = False) -> dict:
     """Traduce un producto de Smartier a los campos de product.product."""
     activo, vendible = _estado_odoo(producto)
     valores = {
@@ -125,8 +184,22 @@ def _valores(producto: dict, tax_id: int | None) -> dict:
         "active": activo,
         "sale_ok": vendible,
         "purchase_ok": False,
-        "description_sale": f"Tipo Smartier: {producto.get('Tipo', '-')}",
+        "description_sale": (
+            f"Tipo Smartier: {producto.get('Tipo', '-')}\n"
+            "PRECIO PENDIENTE: Smartier no publica tarifa de catalogo; el "
+            "precio real viaja en cada nota de entrega. El importe que figura "
+            "aqui es solo un marcador."
+        ),
     }
+    if precio_usd and vendible:
+        # La localizacion exige list_price_usd > 0 en todo producto vendible
+        # (_check_list_price_usd, smai_homologacion/models/product_template.py).
+        # Smartier NO publica precios de catalogo -- su API de productos solo
+        # da nombre, tipo e IVA -- asi que se pone un marcador para que el
+        # create no falle. Queda avisado en description_sale: no es un precio,
+        # y facturar toma el importe de la nota de entrega, no este.
+        valores["list_price"] = PRECIO_MARCADOR
+        valores["list_price_usd"] = PRECIO_MARCADOR
     # Exento: sin impuestos; si no, la alicuota que indique Smartier.
     if producto.get("Exento"):
         valores["taxes_id"] = [(6, 0, [])]
@@ -142,7 +215,7 @@ def _registrar(producto: dict, id_odoo, accion: str, detalle: str,
     estado = EstadoSync.ERROR if error else EstadoSync.PROCESADO
 
     state_store.registrar_mapeo(
-        ENTIDAD, id_origen, model_odoo="product.product",
+        ENTIDAD, id_origen, model_odoo="product.template",
         id_odoo=id_odoo, estado=estado,
     )
     if error:
@@ -190,11 +263,11 @@ def main() -> int:
     for p in productos:
         codigo = f"{PREFIJO}{p['Id']}"
         tax_id = None if p.get("Exento") else cache.get(float(p.get("PorcentajeIVA") or 0))
-        valores = _valores(p, tax_id)
+        valores = _valores(p, tax_id, precio_usd=_tiene_precio_usd(odoo))
 
         try:
             existente = odoo.execute(
-                "product.product", "search_read", [["default_code", "=", codigo]],
+                "product.template", "search_read", [["default_code", "=", codigo]],
                 fields=["id"], limit=1,
                 # active_test=False: Odoo excluye los archivados de cualquier
                 # busqueda por defecto. Sin esto, un producto que pasara a
@@ -204,14 +277,14 @@ def main() -> int:
             )
             if existente:
                 if APLICAR:
-                    odoo.execute("product.product", "write", [existente[0]["id"]], valores)
+                    odoo.execute("product.template", "write", [existente[0]["id"]], valores)
                     _registrar(p, existente[0]["id"], "actualizar",
                                f"IVA {p.get('PorcentajeIVA')}%")
                 actualizados += 1
                 estado = f"ya existe (id={existente[0]['id']})"
             else:
                 if APLICAR:
-                    nuevo = odoo.execute("product.product", "create", valores)
+                    nuevo = odoo.execute("product.template", "create", valores)
                     _registrar(p, nuevo, "crear",
                                f"{p.get('Tipo','-')} · IVA {p.get('PorcentajeIVA')}%")
                     estado = f"creado (id={nuevo})"
