@@ -564,8 +564,8 @@ function init3d(){
   const scene = new THREE.Scene();
   const ancho = cont.clientWidth || 800, alto = cont.clientHeight || 260;
   const camera = new THREE.PerspectiveCamera(34, ancho/alto, 0.1, 200);
-  camera.position.set(0, 2.2, 17.5);
-  camera.lookAt(0, -0.2, 0);
+  camera.position.set(0, 1.6, 17.5);
+  camera.lookAt(0, 0, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -632,7 +632,7 @@ function init3d(){
     // Etiqueta con el nombre, dentro de la escena: leerla en la escena evita
     // tener que cruzar la mirada con la leyenda de abajo.
     const etiqueta = etiqueta3d(e.nombre, e.color);
-    etiqueta.position.y = -2.6;
+    etiqueta.position.y = -1.95;
     grupo.add(etiqueta);
 
     scene.add(grupo);
@@ -710,10 +710,21 @@ function init3d(){
 function encuadrar3d(){
   if(!esc3d) return;
   const cam = esc3d.camera;
-  const ANCHO_ESCENA = 25;   // de -10.5 a +10.5, mas los anillos y su margen
+
+  // Ancho real a cubrir: el nodo mas extremo esta en x=10.5, y alrededor lleva
+  // anillo (1.75) y halo (2.1). Ademas el grupo se ESCALA con el volumen de
+  // datos -- hasta 1.9x -- asi que se toma el peor caso, o el nodo mas cargado
+  // se sale del encuadre justo cuando mas interesa verlo.
+  const ESCALA_MAX = 1.9;
+  const semiAncho = 10.5 + 2.1 * ESCALA_MAX;   // ~14.5
+  const MARGEN = 1.12;                          // aire a los lados
+
   const fovH = 2 * Math.atan(Math.tan(cam.fov * Math.PI/360) * cam.aspect);
-  const dist = (ANCHO_ESCENA / 2) / Math.tan(fovH / 2);
-  cam.position.z = Math.max(dist, 12);
+  const dist = (semiAncho * MARGEN) / Math.tan(fovH / 2);
+
+  // Sin tope inferior: acercar la camara "por si acaso" era justo lo que
+  // recortaba los nodos de los extremos.
+  cam.position.z = dist;
   cam.updateProjectionMatrix();
 }
 
@@ -816,6 +827,15 @@ function actualizar3d(resumen, cola){
     // que caber en la misma escena sin que el nodo grande tape a los demas.
     const escala = 1 + Math.min(Math.log10(d.valor + 1) * .38, .9);
     const brillo = d.valor > 0 ? .55 : .12;
+
+    // La etiqueta es hija del grupo, asi que hereda su escala. Se compensa con
+    // la inversa para que el texto mida igual en todos los nodos y no se
+    // desplace hacia abajo en los mas cargados.
+    if(n.etiqueta){
+      const inv = 1 / escala;
+      n.etiqueta.scale.set(3.4 * inv, .85 * inv, 1);
+      n.etiqueta.position.y = -1.95 * inv - .55;
+    }
 
     if(typeof anime === "undefined"){
       // Sin anime.js el valor se aplica de golpe: el panel debe seguir
