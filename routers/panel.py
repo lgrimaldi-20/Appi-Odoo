@@ -562,7 +562,7 @@ function init3d(){
   }
 
   const scene = new THREE.Scene();
-  const ancho = cont.clientWidth || 800, alto = cont.clientHeight || 260;
+  const ancho = cont.clientWidth || 800, alto = cont.clientHeight || 300;
   const camera = new THREE.PerspectiveCamera(34, ancho/alto, 0.1, 200);
   camera.position.set(0, 1.6, 17.5);
   camera.lookAt(0, 0, 0);
@@ -687,13 +687,27 @@ function init3d(){
     esc3d.ultimoX = ev.clientX;
   });
 
-  window.addEventListener("resize", ()=>{
+  function ajustarTamano(){
     if(!esc3d) return;
-    const w = cont.clientWidth || 800, h = cont.clientHeight || 260;
-    esc3d.camera.aspect = w/h; esc3d.camera.updateProjectionMatrix();
-    esc3d.renderer.setSize(w, h);
+    const w = cont.clientWidth, h = cont.clientHeight;
+    if(!w || !h) return;                       // aun sin layout: no medir
+    esc3d.camera.aspect = w / h;
+    esc3d.camera.updateProjectionMatrix();
+    esc3d.renderer.setSize(w, h, false);
     encuadrar3d();
-  });
+  }
+  window.addEventListener("resize", ajustarTamano);
+
+  // El contenedor puede cambiar de ancho SIN que cambie la ventana: al
+  // asentarse el layout, al mostrar la escena tras ocultarla, al aparecer una
+  // barra de desplazamiento. Escuchando solo el resize de window, el renderer
+  // se quedaba dibujando al tamano inicial -- 800px de reserva -- dentro de un
+  // rectangulo mucho mas ancho, y la escena aparecia pegada a la izquierda.
+  if(typeof ResizeObserver !== "undefined"){
+    new ResizeObserver(ajustarTamano).observe(cont);
+  }
+  // Y una medida diferida, por si el observador no llega a tiempo al montar.
+  requestAnimationFrame(ajustarTamano);
 
   encuadrar3d();
   animar3d();
@@ -715,9 +729,13 @@ function encuadrar3d(){
   // anillo (1.75) y halo (2.1). Ademas el grupo se ESCALA con el volumen de
   // datos -- hasta 1.9x -- asi que se toma el peor caso, o el nodo mas cargado
   // se sale del encuadre justo cuando mas interesa verlo.
+  // Se encuadra por el ANILLO (1.75), no por el halo: este ultimo es un
+  // degradado muy tenue y no pasa nada porque roce el borde. Encuadrar por el
+  // halo obligaba a alejar la camara de mas y la escena quedaba pequeña en
+  // medio del rectangulo.
   const ESCALA_MAX = 1.9;
-  const semiAncho = 10.5 + 2.1 * ESCALA_MAX;   // ~14.5
-  const MARGEN = 1.12;                          // aire a los lados
+  const semiAncho = 10.5 + 1.75 * ESCALA_MAX;  // ~13.8
+  const MARGEN = 1.04;                          // solo un respiro a los lados
 
   const fovH = 2 * Math.atan(Math.tan(cam.fov * Math.PI/360) * cam.aspect);
   const dist = (semiAncho * MARGEN) / Math.tan(fovH / 2);
