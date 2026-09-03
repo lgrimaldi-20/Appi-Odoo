@@ -307,6 +307,7 @@ _PANEL_HTML = r"""<!doctype html>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/animejs@4.1.4/lib/anime.umd.min.js"></script>
 <script>
 let APIKEY = sessionStorage.getItem("apikey") || "";
 let tab = "sync";
@@ -345,6 +346,9 @@ async function pollerAhora(btn){
     });
     setPollerStatus(true,
       `Poller: ${d.leidas} leidas · ${d.procesadas} procesadas · ${d.con_error} con error`);
+    // Rafaga en la escena: hace visible el momento exacto en que el poller
+    // movio registros de la cola a Odoo, que es el instante que interesa ver.
+    if(d.procesadas > 0) rafaga3d(d.procesadas);
     await cargarTodo();
   } catch (e) {
     setPollerStatus(false, e.message);
@@ -621,7 +625,26 @@ function init3d(){
   });
 
   animar3d();
+  entrada3d();
   document.getElementById("flujo-estado").textContent = "arrastra para girar";
+}
+
+// Entrada escalonada: los nodos caen desde arriba de izquierda a derecha,
+// siguiendo el sentido del flujo. Da a entender el recorrido antes de que
+// llegue el primer dato.
+function entrada3d(){
+  if(typeof anime === "undefined" || !esc3d) return;
+  ETAPAS.forEach((e, i)=>{
+    const n = esc3d.nodos[e.id];
+    n.grupo.scale.setScalar(0);
+    n.grupo.position.y = 6;
+    anime.animate(n.grupo.position, {
+      y: 0, duration: 1100, delay: i * 130, ease: "outBounce",
+    });
+    anime.animate(n.grupo.scale, {
+      x: 1, y: 1, z: 1, duration: 900, delay: i * 130, ease: "outElastic(1, .6)",
+    });
+  });
 }
 
 function animar3d(){
@@ -683,27 +706,116 @@ function actualizar3d(resumen, cola){
     odoo:     { valor: procesados, error:false },
   };
 
-  Object.entries(datos).forEach(([id, d])=>{
+  Object.entries(datos).forEach(([id, d], i)=>{
     const n = esc3d.nodos[id];
     if(!n) return;
+    const cambio = n.valor !== d.valor;
+    const previo = n.valor;
     n.valor = d.valor;
     n.error = d.error;
+
     // El tamano crece con el logaritmo del volumen: 3 registros y 300 tienen
     // que caber en la misma escena sin que el nodo grande tape a los demas.
     const escala = 1 + Math.min(Math.log10(d.valor + 1) * .38, .9);
-    n.grupo.scale.setScalar(escala);
-    n.esfera.material.emissiveIntensity = d.valor > 0 ? .55 : .12;
+    const brillo = d.valor > 0 ? .55 : .12;
+
+    if(typeof anime === "undefined"){
+      // Sin anime.js el valor se aplica de golpe: el panel debe seguir
+      // funcionando aunque el CDN falle.
+      n.grupo.scale.setScalar(escala);
+      n.esfera.material.emissiveIntensity = brillo;
+      return;
+    }
+
+    // Escala y brillo se interpolan en vez de saltar. El escalonado por indice
+    // hace que los nodos reaccionen en cascada de izquierda a derecha, que es
+    // el sentido en que fluyen los datos.
+    anime.animate(n.grupo.scale, {
+      x: escala, y: escala, z: escala,
+      duration: 900, delay: i * 70, ease: "outElastic(1, .7)",
+    });
+    anime.animate(n.esfera.material, {
+      emissiveIntensity: brillo, duration: 700, delay: i * 70, ease: "outQuad",
+    });
+
+    // Un nodo que RECIBE registros da un empujon hacia arriba y vuelve: es la
+    // senal de que algo acaba de llegar ahi, visible aunque no se mire fijo.
+    if(cambio && d.valor > previo){
+      anime.animate(n.grupo.position, {
+        y: [0, .9, 0], duration: 1100, delay: i * 70, ease: "outQuad",
+      });
+    }
   });
 
-  // Mas trabajo en transito, mas particulas por segundo.
-  esc3d.caudal = .012 + Math.min((enCola + pendientes) * .02, .1);
+  // Mas trabajo en transito, mas particulas por segundo. Tambien se interpola:
+  // un salto brusco del caudal se percibe como un parpadeo.
+  const caudalNuevo = .012 + Math.min((enCola + pendientes) * .02, .1);
+  if(typeof anime !== "undefined"){
+    anime.animate(esc3d, { caudal: caudalNuevo, duration: 1200, ease: "inOutQuad" });
+  }else{
+    esc3d.caudal = caudalNuevo;
+  }
 
-  document.getElementById("leyenda3d").innerHTML = ETAPAS.map(e=>{
+  pintarLeyenda(errores);
+}
+
+// La leyenda cuenta hacia el valor nuevo en vez de sustituirlo. Ver el numero
+// subir de 55 a 56 comunica que ENTRO uno; reemplazarlo no dice nada.
+function pintarLeyenda(errores){
+  const cont = document.getElementById("leyenda3d");
+  const previos = esc3d.leyendaPrevia || {};
+
+  cont.innerHTML = ETAPAS.map(e=>{
     const n = esc3d.nodos[e.id];
     const col = "#" + e.color.toString(16).padStart(6,"0");
     return `<span><span style="color:${col}">&#9679;</span> ${e.nombre}:
-            <b>${n.valor}</b></span>`;
+            <b id="cnt-${e.id}">${previos[e.id] ?? n.valor}</b></span>`;
   }).join("") + (errores ? ` <span class="err-txt">&#9679; ${errores} con error</span>` : "");
+
+  if(typeof anime === "undefined") return;
+  ETAPAS.forEach((e, i)=>{
+    const n = esc3d.nodos[e.id];
+    const desde = previos[e.id] ?? n.valor;
+    if(desde === n.valor) return;
+    const obj = { v: desde };
+    anime.animate(obj, {
+      v: n.valor, duration: 800, delay: i * 70, ease: "outQuad",
+      onUpdate: ()=>{
+        const el = document.getElementById("cnt-" + e.id);
+        if(el) el.textContent = Math.round(obj.v);
+      },
+    });
+  });
+  esc3d.leyendaPrevia = Object.fromEntries(
+    ETAPAS.map(e=>[e.id, esc3d.nodos[e.id].valor])
+  );
+}
+
+// Lanza una rafaga de particulas por el pipeline. Se llama cuando el poller
+// informa de registros procesados: el numero de particulas es proporcional,
+// con un tope para que 500 facturas no saturen la escena.
+function rafaga3d(cuantas){
+  if(!esc3d || typeof anime === "undefined") return;
+  const libres = esc3d.particulas.filter(p=>!p.activa);
+  const n = Math.min(cuantas, libres.length, 24);
+  libres.slice(0, n).forEach((p, i)=>{
+    setTimeout(()=>{
+      p.activa = true; p.t = 0; p.tramo = 1;   // de la Cola hacia Odoo
+      p.vel = .012;                            // mas rapida que el flujo normal
+      p.malla.material.color.setHex(0x22c55e);
+      p.malla.visible = true;
+    }, i * 55);
+  });
+
+  // Los nodos de Middleware y Odoo acusan el golpe.
+  ["middle","odoo"].forEach((id, i)=>{
+    const nodo = esc3d.nodos[id];
+    if(!nodo) return;
+    anime.animate(nodo.esfera.rotation, {
+      y: nodo.esfera.rotation.y + Math.PI * 2,
+      duration: 1200, delay: i * 200, ease: "outQuart",
+    });
+  });
 }
 
 function toggle3d(btn){
