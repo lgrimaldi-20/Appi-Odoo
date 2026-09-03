@@ -130,6 +130,23 @@ _PANEL_HTML = r"""<!doctype html>
   button:disabled:hover { border-color:var(--border); }
   .pager { display:flex; gap:8px; align-items:center; margin-top:12px; }
   .pager select { margin-left:auto; }
+  /* --- Vista 3D del flujo --- */
+  .flujo3d { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:12px 16px 8px; margin-bottom:16px; }
+  .flujo3d-head { display:flex; gap:12px; align-items:center; margin-bottom:8px; }
+  .flujo3d-head .titulo { font-weight:600; }
+  .flujo3d-head .mini { margin-left:auto; padding:4px 10px; font-size:12px; }
+  #lienzo3d { height:260px; border-radius:8px; overflow:hidden; cursor:grab; }
+  #lienzo3d.oculto { display:none; }
+  #lienzo3d:active { cursor:grabbing; }
+  .leyenda { display:flex; gap:18px; flex-wrap:wrap; padding:8px 2px 2px;
+    font-size:12px; color:var(--muted); }
+  .leyenda b { color:var(--txt); font-weight:600; }
+  /* Fila que cambio desde el ultimo refresco: destaca un instante y se apaga.
+     Con auto-refresco encendido es la forma de ver QUE se movio sin releer
+     toda la tabla. */
+  @keyframes destello { from { background:rgba(56,189,248,.22); } to { background:transparent; } }
+  tr.nuevo { animation:destello 2.2s ease-out; }
   button.primary { background:var(--accent); color:#04283a; border-color:var(--accent); font-weight:600; }
   .tabs { display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--border); }
   .tab { padding:8px 16px; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent; }
@@ -174,7 +191,7 @@ _PANEL_HTML = r"""<!doctype html>
     </div>
     <span id="lastupd" class="muted"></span>
     <label class="muted" style="display:flex;gap:6px;align-items:center">
-      <input type="checkbox" id="auto" style="width:auto"> auto
+      <input type="checkbox" id="auto" style="width:auto" checked> auto (5s)
     </label>
     <button onclick="pollerAhora(this)">Poller ahora</button>
     <button onclick="cargarTodo()">Refrescar</button>
@@ -183,6 +200,19 @@ _PANEL_HTML = r"""<!doctype html>
 </header>
 <main>
   <div class="cards" id="cards"></div>
+
+  <!-- Vista 3D del flujo. Los nodos representan las cuatro etapas y las
+       particulas que viajan entre ellos son registros reales: el brillo y el
+       caudal salen de los datos, no de una animacion decorativa. -->
+  <section class="flujo3d">
+    <div class="flujo3d-head">
+      <span class="titulo">Flujo en vivo</span>
+      <span id="flujo-estado" class="muted">iniciando...</span>
+      <button onclick="toggle3d(this)" id="btn3d" class="mini">Ocultar</button>
+    </div>
+    <div id="lienzo3d"></div>
+    <div class="leyenda" id="leyenda3d"></div>
+  </section>
 
   <div class="tabs">
     <div class="tab active" data-tab="sync" onclick="verTab('sync')">Sincronizaciones</div>
@@ -276,6 +306,7 @@ _PANEL_HTML = r"""<!doctype html>
 </main>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 let APIKEY = sessionStorage.getItem("apikey") || "";
 let tab = "sync";
@@ -339,8 +370,12 @@ function esc(s){ return (s===null||s===undefined)?"":String(s)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function fecha(s){ return s? new Date(s).toLocaleString() : ""; }
 
+// Ultimas respuestas, compartidas con la escena 3D para no duplicar peticiones.
+let ULTIMO_RESUMEN = {}, ULTIMA_COLA = {};
+
 async function cargarResumen(){
   const d = await api("/panel/api/resumen");
+  ULTIMO_RESUMEN = d;
   const c = document.getElementById("cards");
   const e = d.por_estado;
   c.innerHTML = `
@@ -442,6 +477,7 @@ async function cargarCola(){
   const est = document.getElementById("c-estado").value;
   if(est) p.set("estado", est);
   const d = await api("/panel/api/cola?"+p.toString());
+  ULTIMA_COLA = d;
 
   // Modo pull apagado: se avisa en vez de mostrar una tabla vacia enganosa.
   document.getElementById("cola-off").classList.toggle("hide", d.habilitado);
@@ -469,23 +505,240 @@ async function cargarCola(){
   </tr>`).join("");
 }
 
+
+// ---------------------------------------------------------------------------
+// Vista 3D del flujo (Three.js)
+//
+// Cuatro nodos, uno por etapa del pipeline, unidos por particulas que viajan
+// entre ellos. Lo que se ve sale de los datos reales:
+//
+//   - el tamano y el brillo de cada nodo dependen de cuantos registros tiene,
+//   - el caudal de particulas crece con los que estan en transito,
+//   - un nodo con errores late en rojo.
+//
+// Si Three.js no carga (CDN bloqueado, red caida), la seccion se oculta sola:
+// es un extra visual, no debe impedir usar el panel.
+// ---------------------------------------------------------------------------
+
+const ETAPAS = [
+  { id:"smartier", nombre:"Smartier",  x:-9, color:0x8b5cf6 },
+  { id:"cola",     nombre:"Cola",      x:-3, color:0x38bdf8 },
+  { id:"middle",   nombre:"Middleware",x: 3, color:0x22c55e },
+  { id:"odoo",     nombre:"Odoo",      x: 9, color:0xf59e0b },
+];
+
+let esc3d = null;   // {scene, camera, renderer, nodos, particulas, ...}
+
+function init3d(){
+  const cont = document.getElementById("lienzo3d");
+  if(!cont || typeof THREE === "undefined"){
+    document.querySelector(".flujo3d")?.classList.add("hide");
+    return;
+  }
+
+  const scene = new THREE.Scene();
+  const ancho = cont.clientWidth || 800, alto = cont.clientHeight || 260;
+  const camera = new THREE.PerspectiveCamera(42, ancho/alto, 0.1, 200);
+  camera.position.set(0, 3.2, 18);
+  camera.lookAt(0, 0, 0);
+
+  const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(ancho, alto);
+  cont.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const luz = new THREE.DirectionalLight(0xffffff, 0.9);
+  luz.position.set(4, 8, 10);
+  scene.add(luz);
+
+  // --- Nodos: una esfera por etapa, con un halo que late ---
+  const nodos = {};
+  ETAPAS.forEach(e=>{
+    const grupo = new THREE.Group();
+    grupo.position.x = e.x;
+
+    const esfera = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(1.1, 2),
+      new THREE.MeshStandardMaterial({
+        color:e.color, roughness:.35, metalness:.5,
+        emissive:e.color, emissiveIntensity:.25,
+      })
+    );
+    grupo.add(esfera);
+
+    const halo = new THREE.Mesh(
+      new THREE.SphereGeometry(1.5, 24, 24),
+      new THREE.MeshBasicMaterial({ color:e.color, transparent:true, opacity:.10 })
+    );
+    grupo.add(halo);
+
+    scene.add(grupo);
+    nodos[e.id] = { grupo, esfera, halo, base:e, valor:0, error:false };
+  });
+
+  // --- Tuberias entre etapas ---
+  for(let i=0; i<ETAPAS.length-1; i++){
+    const a = ETAPAS[i], b = ETAPAS[i+1];
+    const tubo = new THREE.Mesh(
+      new THREE.CylinderGeometry(.06, .06, b.x-a.x, 8),
+      new THREE.MeshBasicMaterial({ color:0x334155, transparent:true, opacity:.5 })
+    );
+    tubo.rotation.z = Math.PI/2;
+    tubo.position.x = (a.x + b.x)/2;
+    scene.add(tubo);
+  }
+
+  // --- Particulas: cada una es un registro viajando por el pipeline ---
+  const particulas = [];
+  const geoP = new THREE.SphereGeometry(.13, 8, 8);
+  for(let i=0; i<60; i++){
+    const m = new THREE.Mesh(geoP, new THREE.MeshBasicMaterial({ color:0x38bdf8 }));
+    m.visible = false;
+    scene.add(m);
+    particulas.push({ malla:m, t:0, tramo:0, activa:false, vel:.004 });
+  }
+
+  esc3d = { scene, camera, renderer, nodos, particulas, cont,
+            caudal:.02, giro:0, arrastrando:false, ultimoX:0 };
+
+  // Arrastrar para girar la escena.
+  cont.addEventListener("pointerdown", ev=>{
+    esc3d.arrastrando = true; esc3d.ultimoX = ev.clientX;
+  });
+  window.addEventListener("pointerup", ()=>{ esc3d.arrastrando = false; });
+  window.addEventListener("pointermove", ev=>{
+    if(!esc3d.arrastrando) return;
+    esc3d.giro += (ev.clientX - esc3d.ultimoX) * .005;
+    esc3d.ultimoX = ev.clientX;
+  });
+
+  window.addEventListener("resize", ()=>{
+    if(!esc3d) return;
+    const w = cont.clientWidth || 800, h = cont.clientHeight || 260;
+    esc3d.camera.aspect = w/h; esc3d.camera.updateProjectionMatrix();
+    esc3d.renderer.setSize(w, h);
+  });
+
+  animar3d();
+  document.getElementById("flujo-estado").textContent = "arrastra para girar";
+}
+
+function animar3d(){
+  if(!esc3d) return;
+  requestAnimationFrame(animar3d);
+  const t = performance.now() * .001;
+
+  // La escena entera oscila despacio, mas lo que el usuario arrastre.
+  esc3d.scene.rotation.y = esc3d.giro + Math.sin(t*.18) * .12;
+
+  Object.values(esc3d.nodos).forEach((n, i)=>{
+    n.esfera.rotation.y += .004;
+    n.esfera.rotation.x += .002;
+    // Latido: rapido y marcado si hay errores, sereno si todo va bien.
+    const ritmo = n.error ? 6 : 1.6;
+    const amp   = n.error ? .16 : .06;
+    const s = 1 + Math.sin(t*ritmo + i) * amp;
+    n.halo.scale.setScalar(s);
+    n.halo.material.opacity = n.error ? .22 + Math.sin(t*6+i)*.12 : .10;
+  });
+
+  // Particulas viajando de un nodo al siguiente.
+  esc3d.particulas.forEach(p=>{
+    if(!p.activa){
+      if(Math.random() < esc3d.caudal){
+        p.activa = true; p.t = 0;
+        p.tramo = Math.floor(Math.random() * (ETAPAS.length-1));
+        p.malla.material.color.setHex(ETAPAS[p.tramo+1].color);
+        p.malla.visible = true;
+      }
+      return;
+    }
+    p.t += p.vel;
+    if(p.t >= 1){ p.activa = false; p.malla.visible = false; return; }
+    const a = ETAPAS[p.tramo].x, b = ETAPAS[p.tramo+1].x;
+    p.malla.position.x = a + (b-a)*p.t;
+    // Arco: sube y baja entre nodo y nodo.
+    p.malla.position.y = Math.sin(p.t*Math.PI) * 1.3;
+    p.malla.position.z = Math.sin(p.t*Math.PI*2) * .35;
+  });
+
+  esc3d.renderer.render(esc3d.scene, esc3d.camera);
+}
+
+// Alimenta la escena con los datos del resumen y de la cola.
+function actualizar3d(resumen, cola){
+  if(!esc3d) return;
+  const est = resumen.por_estado || {};
+  const ent = resumen.por_entidad || {};
+  const enCola = (cola && cola.filas) ? cola.filas.length : 0;
+  const pendientes = est.PENDIENTE || 0;
+  const errores = est.ERROR || 0;
+  const procesados = est.PROCESADO || 0;
+
+  const datos = {
+    smartier: { valor: Object.values(ent).reduce((a,b)=>a+b,0), error:false },
+    cola:     { valor: enCola, error:false },
+    middle:   { valor: (est.PROCESANDO||0) + pendientes, error: errores>0 },
+    odoo:     { valor: procesados, error:false },
+  };
+
+  Object.entries(datos).forEach(([id, d])=>{
+    const n = esc3d.nodos[id];
+    if(!n) return;
+    n.valor = d.valor;
+    n.error = d.error;
+    // El tamano crece con el logaritmo del volumen: 3 registros y 300 tienen
+    // que caber en la misma escena sin que el nodo grande tape a los demas.
+    const escala = 1 + Math.min(Math.log10(d.valor + 1) * .38, .9);
+    n.grupo.scale.setScalar(escala);
+    n.esfera.material.emissiveIntensity = d.valor > 0 ? .55 : .12;
+  });
+
+  // Mas trabajo en transito, mas particulas por segundo.
+  esc3d.caudal = .012 + Math.min((enCola + pendientes) * .02, .1);
+
+  document.getElementById("leyenda3d").innerHTML = ETAPAS.map(e=>{
+    const n = esc3d.nodos[e.id];
+    const col = "#" + e.color.toString(16).padStart(6,"0");
+    return `<span><span style="color:${col}">&#9679;</span> ${e.nombre}:
+            <b>${n.valor}</b></span>`;
+  }).join("") + (errores ? ` <span class="err-txt">&#9679; ${errores} con error</span>` : "");
+}
+
+function toggle3d(btn){
+  const c = document.getElementById("lienzo3d");
+  const oculto = c.classList.toggle("oculto");
+  btn.textContent = oculto ? "Mostrar" : "Ocultar";
+}
+
 async function cargarTodo(){
   try{
     await cargarResumen();
     await cargarSync();
     await cargarLogs();
     await cargarCola();
+    // La escena 3D se alimenta de los mismos datos que las tarjetas: no hace
+    // peticiones propias.
+    try{ actualizar3d(ULTIMO_RESUMEN, ULTIMA_COLA); }catch(e){ /* extra visual */ }
     document.getElementById("lastupd").textContent = "Actualizado "+new Date().toLocaleTimeString();
   }catch(e){
     if(e.message.includes("API Key")) salir();
   }
 }
 
+if(document.getElementById("auto").checked){ autoTimer=setInterval(cargarTodo,5000); }
 document.getElementById("auto").addEventListener("change", ev=>{
   if(ev.target.checked){ autoTimer=setInterval(cargarTodo,5000); }
   else{ clearInterval(autoTimer); }
 });
 document.getElementById("key")?.addEventListener("keydown",e=>{ if(e.key==="Enter")entrar(); });
+
+// La escena 3D se monta al cargar: el lienzo ya tiene tamano en el DOM.
+window.addEventListener('load', ()=>{ try{ init3d(); }catch(e){
+  // Si Three.js no esta disponible el panel debe seguir siendo usable.
+  document.querySelector('.flujo3d')?.classList.add('hide');
+} });
 
 // Autologin si ya hay clave en sesion.
 if(APIKEY){ entrar(); }
