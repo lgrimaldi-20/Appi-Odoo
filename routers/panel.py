@@ -123,6 +123,13 @@ _PANEL_HTML = r"""<!doctype html>
   input,select,button { background:var(--panel2); color:var(--txt); border:1px solid var(--border);
     border-radius:8px; padding:8px 12px; font-size:13px; }
   button { cursor:pointer; } button:hover { border-color:var(--accent); }
+  /* Un boton deshabilitado se atenua y deja de responder al puntero: en la
+     primera y la ultima pagina, "Anterior"/"Siguiente" no llevan a ningun
+     sitio y conviene que se vea antes de pulsarlos. */
+  button:disabled { opacity:.4; cursor:default; }
+  button:disabled:hover { border-color:var(--border); }
+  .pager { display:flex; gap:8px; align-items:center; margin-top:12px; }
+  .pager select { margin-left:auto; }
   button.primary { background:var(--accent); color:#04283a; border-color:var(--accent); font-weight:600; }
   .tabs { display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--border); }
   .tab { padding:8px 16px; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent; }
@@ -201,6 +208,18 @@ _PANEL_HTML = r"""<!doctype html>
       </tr></thead>
       <tbody id="sync-body"></tbody>
     </table>
+    <div class="pager">
+      <button onclick="paginaSync(-1)" id="sync-prev">&#8592; Anterior</button>
+      <span id="sync-rango" class="muted"></span>
+      <button onclick="paginaSync(1)" id="sync-next">Siguiente &#8594;</button>
+      <select id="sync-tam" onchange="tamSync()">
+        <option value="25">25 por pagina</option>
+        <option value="50" selected>50 por pagina</option>
+        <option value="100">100 por pagina</option>
+        <option value="250">250 por pagina</option>
+        <option value="500">500 por pagina</option>
+      </select>
+    </div>
   </div>
 
   <div id="tab-logs" class="hide">
@@ -220,6 +239,18 @@ _PANEL_HTML = r"""<!doctype html>
       </tr></thead>
       <tbody id="logs-body"></tbody>
     </table>
+    <div class="pager">
+      <button onclick="paginaLogs(-1)" id="logs-prev">&#8592; Anterior</button>
+      <span id="logs-rango" class="muted"></span>
+      <button onclick="paginaLogs(1)" id="logs-next">Siguiente &#8594;</button>
+      <select id="logs-tam" onchange="tamLogs()">
+        <option value="25">25 por pagina</option>
+        <option value="50" selected>50 por pagina</option>
+        <option value="100">100 por pagina</option>
+        <option value="250">250 por pagina</option>
+        <option value="500">500 por pagina</option>
+      </select>
+    </div>
   </div>
 
   <div id="tab-cola" class="hide">
@@ -321,14 +352,46 @@ async function cargarResumen(){
     <div class="card"><div class="n">${d.logs.total}</div><div class="l">Logs (${d.logs.errores} err)</div></div>`;
 }
 
-async function cargarSync(){
+// Paginacion: el desplazamiento se guarda aparte de los filtros porque
+// cambiar un filtro debe volver a la primera pagina -- si no, una busqueda que
+// devuelve pocas filas se veria vacia al conservar un offset alto.
+let syncOffset = 0, logsOffset = 0;
+
+function tamPagina(id){ return parseInt(document.getElementById(id).value, 10) || 50; }
+
+function pintarPager(pre, offset, mostradas, total){
+  const desde = total ? offset + 1 : 0;
+  document.getElementById(pre+"-rango").textContent =
+    `${desde}-${offset + mostradas} de ${total}`;
+  document.getElementById(pre+"-prev").disabled = offset <= 0;
+  document.getElementById(pre+"-next").disabled = offset + mostradas >= total;
+}
+
+function paginaSync(dir){
+  syncOffset = Math.max(0, syncOffset + dir * tamPagina("sync-tam"));
+  cargarSync(true);
+}
+function tamSync(){ syncOffset = 0; cargarSync(true); }
+
+function paginaLogs(dir){
+  logsOffset = Math.max(0, logsOffset + dir * tamPagina("logs-tam"));
+  cargarLogs(true);
+}
+function tamLogs(){ logsOffset = 0; cargarLogs(true); }
+
+async function cargarSync(mantenerPagina){
+  // Al filtrar se vuelve al principio; al paginar se conserva el offset.
+  if(!mantenerPagina) syncOffset = 0;
+  const lim = tamPagina("sync-tam");
   const p = new URLSearchParams();
   const est=document.getElementById("f-estado").value;
   const ent=document.getElementById("f-entidad").value;
   const ido=document.getElementById("f-idorigen").value;
   if(est)p.set("estado",est); if(ent)p.set("entidad",ent); if(ido)p.set("id_origen",ido);
+  p.set("limite", lim); p.set("offset", syncOffset);
   const d = await api("/panel/api/sincronizaciones?"+p.toString());
   document.getElementById("sync-count").textContent = d.total+" registro(s)";
+  pintarPager("sync", syncOffset, d.items.length, d.total);
   const b=document.getElementById("sync-body");
   if(!d.items.length){ b.innerHTML=`<tr><td colspan="7" class="empty">Sin resultados</td></tr>`; return; }
   b.innerHTML = d.items.map(m=>`<tr>
@@ -342,14 +405,18 @@ async function cargarSync(){
   </tr>`).join("");
 }
 
-async function cargarLogs(){
+async function cargarLogs(mantenerPagina){
+  if(!mantenerPagina) logsOffset = 0;
+  const lim = tamPagina("logs-tam");
   const p = new URLSearchParams();
   const res=document.getElementById("l-resultado").value;
   const ent=document.getElementById("l-entidad").value;
   const ido=document.getElementById("l-idorigen").value;
   if(res)p.set("resultado",res); if(ent)p.set("entidad",ent); if(ido)p.set("id_origen",ido);
+  p.set("limite", lim); p.set("offset", logsOffset);
   const d = await api("/panel/api/logs?"+p.toString());
   document.getElementById("logs-count").textContent = d.total+" entrada(s)";
+  pintarPager("logs", logsOffset, d.items.length, d.total);
   const b=document.getElementById("logs-body");
   if(!d.items.length){ b.innerHTML=`<tr><td colspan="6" class="empty">Sin resultados</td></tr>`; return; }
   b.innerHTML = d.items.map(l=>`<tr>
