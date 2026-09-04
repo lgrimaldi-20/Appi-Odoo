@@ -24,10 +24,14 @@ pytest tests/test_api.py::TestAutenticacion::test_acepta_api_key_correcta -v   #
 docker build -t api-odoo .
 docker run --env-file .env -p 8000:8000 api-odoo
 
-# Full stack with queue (web + Celery worker + Redis)
+# Full stack with queue (web + Celery worker + beat + Redis)
 docker compose up --build
 # Run the Celery worker directly (needs CELERY_BROKER_URL set):
 celery -A core.celery_app.celery_app worker --loglevel=info
+# Beat is the CLOCK: without it the worker runs but nothing is scheduled, so
+# the automatic flow (maestros -> ingesta -> poller) never starts on its own.
+# Exactly ONE instance — two clocks would enqueue every task twice.
+celery -A core.celery_app.celery_app beat --loglevel=info
 ```
 
 **Environment note:** the checked-in `venv/` has a Unix layout (`venv/bin/`) and is **not** runnable on native Windows. Tests here run against a global Python 3.14 with the deps installed. `.\venv\Scripts\Activate` will not work until the venv is recreated on Windows.

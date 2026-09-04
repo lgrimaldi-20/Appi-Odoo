@@ -36,3 +36,17 @@ services:
     depends_on:
       - redis
     command: celery -A core.celery_app.celery_app worker --loglevel=info
+
+  # Beat es el RELOJ: sin este servicio el worker existe pero nadie le encarga
+  # nada de forma periodica, y el flujo automatico (maestros -> ingesta ->
+  # poller) no arranca solo. Va en un contenedor aparte del worker porque debe
+  # haber UNA sola instancia: dos relojes encolarian cada tarea por duplicado.
+  beat:
+    build: .
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      - redis
+    command: celery -A core.celery_app.celery_app beat --loglevel=info
