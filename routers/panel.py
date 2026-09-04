@@ -363,17 +363,47 @@ async function pollerAhora(btn){
   }
 }
 
-function entrar(){
-  APIKEY = document.getElementById("key").value.trim();
-  api("/panel/api/resumen").then(()=>{
+// Valida una clave contra la API y, si sirve, abre el panel.
+//
+// La clave llega como PARAMETRO y no se lee aqui del formulario. Antes se
+// leia del campo de texto, y eso rompia el refresco: al recargar la pagina el
+// campo esta vacio, asi que el autologin machacaba con "" la clave que venia
+// de sessionStorage y la sesion se caia al login. Como el catch borraba la
+// clave guardada, la siguiente vez tampoco quedaba nada que recordar: de ahi
+// que hiciera falta escribirla dos veces.
+function acceder(clave, esAutologin){
+  APIKEY = clave;
+  return api("/panel/api/resumen").then(()=>{
     sessionStorage.setItem("apikey", APIKEY);
     document.getElementById("gate").classList.add("hide");
     document.getElementById("app").classList.remove("hide");
     cargarTodo();
   }).catch(e=>{
-    const g=document.getElementById("gerr"); g.textContent=e.message; g.classList.remove("hide");
+    // Una clave guardada que ya no vale se descarta; una recien tecleada se
+    // conserva en pantalla para que el usuario pueda corregirla.
+    if(esAutologin) sessionStorage.removeItem("apikey");
+    APIKEY = "";
+    mostrarPuerta(e.message);
   });
 }
+
+function entrar(){
+  const campo = document.getElementById("key");
+  const clave = campo.value.trim();
+  if(!clave){ mostrarPuerta("Introduce la API Key."); return; }
+  acceder(clave, false);
+}
+
+// Deja el panel en la pantalla de acceso, con un aviso si lo hay.
+function mostrarPuerta(mensaje){
+  document.getElementById("app").classList.add("hide");
+  document.getElementById("gate").classList.remove("hide");
+  const g = document.getElementById("gerr");
+  if(mensaje){ g.textContent = mensaje; g.classList.remove("hide"); }
+  else { g.classList.add("hide"); }
+  document.getElementById("key")?.focus();
+}
+
 function salir(){ sessionStorage.removeItem("apikey"); location.reload(); }
 
 function esc(s){ return (s===null||s===undefined)?"":String(s)
@@ -1014,7 +1044,16 @@ async function cargarTodo(){
     try{ actualizar3d(ULTIMO_RESUMEN, ULTIMA_COLA); }catch(e){ /* extra visual */ }
     document.getElementById("lastupd").textContent = "Actualizado "+new Date().toLocaleTimeString();
   }catch(e){
-    if(e.message.includes("API Key")) salir();
+    // Si la clave dejo de valer (se cambio en el servidor, o caduco la
+    // sesion), se vuelve a la pantalla de acceso SIN recargar la pagina: un
+    // location.reload() aqui se repetiria cada 5 s con el auto-refresco
+    // encendido, dejando el panel recargandose en bucle.
+    if(e.message.includes("API Key")){
+      clearInterval(autoTimer);
+      sessionStorage.removeItem("apikey");
+      APIKEY = "";
+      mostrarPuerta("La sesion ha caducado. Vuelve a introducir la API Key.");
+    }
   }
 }
 
@@ -1036,8 +1075,9 @@ window.addEventListener('load', ()=>{ try{ init3d(); }catch(e){
   document.querySelector('.flujo3d')?.classList.add('hide');
 } });
 
-// Autologin si ya hay clave en sesion.
-if(APIKEY){ entrar(); }
+// Autologin: se entra con la clave GUARDADA, no con la del formulario, que
+// tras un refresco esta vacio. Es lo que permite que F5 mantenga la sesion.
+if(APIKEY){ acceder(APIKEY, true); }
 </script>
 </body>
 </html>"""
