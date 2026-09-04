@@ -44,7 +44,37 @@ def _cargar(nombre_modulo: str, ruta_rel: str):
 
 @pytest.fixture(scope="module")
 def clientes_mod():
-    return _cargar("_sync_clientes", "scripts/sincronizar_clientes_smartier.py")
+    """
+    Modulo con la logica de clientes.
+
+    Apunta a core.maestros_smartier, no al script: la logica se movio alli
+    para que Celery Beat pudiera ejecutarla ademas del CLI. Se exponen los
+    nombres antiguos como alias para no reescribir estos tests, que siguen
+    comprobando exactamente las mismas reglas.
+    """
+    import core.maestros_smartier as mod
+    mod._valores = mod.valores_de
+    mod._activo = mod.esta_activo
+    mod._rif = mod.rif_de
+    # Antes devolvia solo los campos fiscales; ahora forman parte de los
+    # valores de creacion, asi que se extraen para conservar el contrato.
+    mod._campos_fiscales_iniciales = lambda odoo: {
+        k: v for k, v in mod.valores_creacion({"Id": 0, "Documento": {}}, odoo).items()
+        if k in ("wh_iva_agent", "wh_iva_rate", "islr_withholding_agent")
+    }
+    # La actualizacion ya no reescribe todos los campos: se compara contra un
+    # contacto vacio para obtener lo que se enviaria.
+    mod._valores_actualizacion = lambda cliente: mod.cambios_para(cliente, {})
+
+    # buscar_en_odoo devuelve ahora el REGISTRO completo (hace falta para
+    # comparar campo a campo y no reescribir lo que no cambio); antes devolvia
+    # solo el id. El alias conserva el contrato antiguo.
+    def _buscar_solo_id(odoo, cliente):
+        hallado, motivo = mod.buscar_en_odoo(odoo, cliente)
+        return (hallado["id"] if hallado else None), motivo
+
+    mod._buscar_en_odoo = _buscar_solo_id
+    return mod
 
 
 @pytest.fixture(scope="module")

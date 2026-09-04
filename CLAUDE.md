@@ -80,6 +80,13 @@ Mitad **izquierda** del modo pull: `Smartier API → [ingesta] → cola_sincroni
 
 **Estado de los datos de Smartier (verificado 2026-08-21):** 3 clientes (los **3 sin RIF**: `Documento.Contenido` a `null`), 48 productos (todos IVA **16 %**, ninguno exento), y **0 notas de entrega / 0 órdenes**. Sin RIF, Odoo con localización venezolana rechaza la factura: la nota se encola igualmente y el poller la deja en ERROR con el motivo, para que sea visible en el panel en vez de descartarse en silencio.
 
+### Clientes en automático (`core/maestros_smartier.py`)
+La lógica de clientes vive en **`core/maestros_smartier.py`**, no en el script: así la ejecutan igual Celery Beat (`sincronizar_maestros_task`, cada `SMARTIER_MAESTROS_INTERVALO_SEG`, 900 s) y el CLI, sin dos copias de las reglas de deduplicación que puedan separarse. `POST /smartier/maestros` fuerza una pasada. **El orden importa:** una nota de entrega necesita que su cliente exista en Odoo para resolver el `partner_id`; por eso los maestros van antes que la ingesta, y aun así una nota que se adelante queda en ERROR (visible), no perdida.
+
+**Solo se escribe lo que cambió** (`cambios_para`): antes se reescribían todos los campos de todos los clientes en cada pasada — con cientos de contactos son cientos de escrituras inútiles y un historial de Odoo donde ya no se distingue un cambio real. Verificado contra la instancia: la segunda pasada seguida hace **cero escrituras**. Odoo devuelve `False` para los char vacíos, así que se normaliza contra `""` para no detectar un cambio falso en cada pasada.
+
+`CAMPOS_ACTUALIZABLES` deja fuera **`comment`** a propósito: es texto libre donde contabilidad escribe sus notas, y una pasada de sincronización no debe apropiárselo — solo se rellena al crear, como pista inicial. Los campos de retención tampoco se actualizan nunca (neutros al crear, intocables después). Un fallo de datos de un cliente se anota y la pasada sigue; un fallo de red aborta y Celery reintenta.
+
 ### Sincronización de datos maestros (`scripts/sincronizar_*_smartier.py`)
 Clientes y productos se cargan en Odoo con dos scripts que, como el resto del flujo, **registran en el `sync_map`**: por eso aparecen en el panel (entidades `cliente` y `producto`) en lugar de ser escrituras invisibles que solo dejan rastro dentro de Odoo. Ambos simulan por defecto y exigen `--aplicar` para escribir.
 - **Deduplicación:** por RIF cuando existe (`res.partner.vat`), y si no —el caso hoy— por el `Id` de Smartier guardado como `SMARTIER-<id>` en `res.partner.ref` / `product.product.default_code`. **Nunca por nombre**, que varía en formato y mayúsculas. Un contacto que ya exista (p. ej. como proveedor) se reutiliza añadiéndole el rol de cliente.

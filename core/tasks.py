@@ -22,6 +22,7 @@ from core.facturacion import crear_factura
 from core.inventario import ajustar_stock
 from core.pagos import crear_pago
 from core.ingesta_smartier import IngestaError, ingerir_notas_entrega
+from core.maestros_smartier import MaestrosError, sincronizar_clientes
 from core.poller import procesar_lote
 from core.rollback import cancelar_factura
 from core.sincronizador import SincronizacionError
@@ -115,6 +116,33 @@ def ingesta_smartier_task(self, limite: int = 200) -> dict:
     de Smartier falla (red, 429 agotado o 5xx).
     """
     resultado = ingerir_notas_entrega(limite=limite)
+    return asdict(resultado)
+
+
+@celery_app.task(
+    bind=True,
+    # Se reintenta ante fallo de RED (Smartier u Odoo caidos). Los rechazos de
+    # datos de un cliente concreto no llegan aqui: se capturan por cliente y
+    # quedan en ERROR, para no abortar la pasada entera por uno malo.
+    autoretry_for=(MaestrosError, OdooConnectionError),
+    retry_backoff=_BACKOFF_BASE,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=_REINTENTOS_MAX,
+)
+def sincronizar_maestros_task(self, tenant: str = "default",
+                              limite: int = 200) -> dict:
+    """
+    Pasada de DATOS MAESTROS: crea o actualiza en Odoo los clientes de Smartier.
+
+    Va ANTES que la ingesta de notas en el calendario de Beat, y esa relacion
+    de orden es lo que da sentido a la tarea: una nota de entrega necesita que
+    su cliente exista en Odoo para resolver el partner_id. Sin esto, la primera
+    nota de un cliente nuevo quedaba en ERROR hasta que alguien se acordaba de
+    ejecutar el script a mano.
+    """
+    odoo = get_tenant(tenant)
+    resultado = sincronizar_clientes(odoo, limite=limite)
     return asdict(resultado)
 
 

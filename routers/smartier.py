@@ -18,8 +18,10 @@ from pydantic import BaseModel, Field
 
 from core.ingesta_smartier import IngestaError, diagnostico, ingerir_notas_entrega
 from core.limites import limitar
-from core.seguridad import verify_api_key
+from core.maestros_smartier import MaestrosError, sincronizar_clientes
+from core.seguridad import resolver_tenant, verify_api_key
 from core.smartier_client import smartier_habilitado
+from odoo_universal import OdooConnectionError
 
 logger = logging.getLogger("api-odoo")
 
@@ -57,6 +59,42 @@ def ingerir(req: IngerirRequest, request: Request):
     except IngestaError as e:
         logger.error("INGESTA_SMARTIER | %s", e)
         raise HTTPException(status_code=502, detail=str(e))
+
+
+class MaestrosRequest(BaseModel):
+    """Parametros de una pasada manual de datos maestros."""
+    tenant: str = Field("default", description="Tenant de Odoo destino.")
+    limite: int = Field(200, ge=1, le=1000,
+                        description="Maximo de clientes a leer.")
+
+
+@router.post("/smartier/maestros")
+@limitar("6/minute")
+def sincronizar_maestros(req: MaestrosRequest, request: Request):
+    """
+    Crea o actualiza en Odoo los clientes de Smartier, de forma sincrona.
+
+    Es la pasada que Beat ejecuta sola cada 15 minutos; este endpoint sirve
+    para forzarla, tipicamente cuando acaban de dar de alta un cliente y no se
+    quiere esperar al siguiente tick para poder facturarle.
+    """
+    if not smartier_habilitado():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Smartier no configurado: define SMARTIER_BASE_URL y "
+                "SMARTIER_API_KEY en el entorno."
+            ),
+        )
+    odoo = resolver_tenant(req.tenant)
+    try:
+        return asdict(sincronizar_clientes(odoo, limite=req.limite))
+    except MaestrosError as e:
+        logger.error("MAESTROS_SMARTIER | %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+    except OdooConnectionError as e:
+        logger.error("MAESTROS_SMARTIER | Odoo no disponible: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.get("/smartier/diagnostico")

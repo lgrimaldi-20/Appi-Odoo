@@ -68,6 +68,26 @@ if os.getenv("SMARTIER_BASE_URL") and os.getenv("SMARTIER_API_KEY"):
         "schedule": _INGESTA_INTERVALO,
         "kwargs": {"limite": _INGESTA_LIMITE},
     }
+
+    # Datos maestros (clientes) desde Smartier hacia Odoo.
+    #
+    # Intervalo MAS LARGO que el de notas a proposito: un cliente se da de alta
+    # o se corrige de vez en cuando, mientras que las notas llegan a diario.
+    # Sondear los clientes al mismo ritmo gastaria cuota de la API (5 req/s por
+    # key) sin ganar nada.
+    #
+    # El orden importa: una nota de entrega necesita que su cliente exista en
+    # Odoo para resolver el partner_id. Por eso los maestros se sincronizan con
+    # un intervalo que garantiza haber pasado antes que la ingesta del dia, y
+    # ademas la propia ingesta deja la nota en ERROR (no la pierde) si aun asi
+    # llega antes que su cliente.
+    _MAESTROS_INTERVALO = float(os.getenv("SMARTIER_MAESTROS_INTERVALO_SEG", "900"))
+    _MAESTROS_TENANT = os.getenv("POLLER_TENANT", "default")
+    schedule["maestros-smartier"] = {
+        "task": "core.tasks.sincronizar_maestros_task",
+        "schedule": _MAESTROS_INTERVALO,
+        "kwargs": {"tenant": _MAESTROS_TENANT, "limite": _INGESTA_LIMITE},
+    }
     celery_app.conf.beat_schedule = schedule
 
 
