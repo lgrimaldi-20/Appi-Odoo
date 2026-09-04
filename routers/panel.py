@@ -140,6 +140,10 @@ _PANEL_HTML = r"""<!doctype html>
   #lienzo3d { height:300px; border-radius:10px; overflow:hidden; cursor:grab;
     background:radial-gradient(ellipse at 50% 40%, #16233c 0%, #0d1626 70%); }
   #lienzo3d.oculto { display:none; }
+  /* En pausa la escena se atenua y pierde el color: se ve de inmediato que lo
+     que muestra ya no esta vivo, sin tener que leer el aviso de al lado. */
+  #lienzo3d.pausado { filter:grayscale(.75) opacity(.45); cursor:default; }
+  #lienzo3d.pausado canvas { transition:filter .4s ease; }
   #lienzo3d:active { cursor:grabbing; }
   .leyenda { display:flex; gap:18px; flex-wrap:wrap; padding:8px 2px 2px;
     font-size:12px; color:var(--muted); }
@@ -713,6 +717,10 @@ function init3d(){
   encuadrar3d();
   animar3d();
   entrada3d();
+  // El navegador recuerda el estado del checkbox al recargar: si 'auto'
+  // quedo apagado, la escena debe nacer en pausa.
+  const chk = document.getElementById('auto');
+  if(chk && !chk.checked) pausar3d(true);
   document.getElementById("flujo-estado").textContent = "arrastra para girar";
 }
 
@@ -771,6 +779,13 @@ function entrada3d(){
 
 function animar3d(){
   if(!esc3d) return;
+  // En pausa se pinta un ultimo fotograma y se corta el bucle. Dejar de pedir
+  // frames libera la GPU: una escena animada sin datos que la respalden solo
+  // gasta bateria y aparenta actividad que no existe.
+  if(esc3d.pausada){
+    esc3d.renderer.render(esc3d.scene, esc3d.camera);
+    return;
+  }
   requestAnimationFrame(animar3d);
   const t = performance.now() * .001;
 
@@ -962,6 +977,26 @@ function rafaga3d(cuantas){
   });
 }
 
+// Sincroniza la escena con el auto-refresco. Sin datos frescos detras, una
+// animacion en marcha afirma que el flujo esta vivo cuando en realidad esta
+// congelado: es peor que no animar nada.
+function pausar3d(pausar){
+  if(!esc3d) return;
+  const estaba = esc3d.pausada;
+  esc3d.pausada = pausar;
+
+  const cont = document.getElementById("lienzo3d");
+  const aviso = document.getElementById("flujo-estado");
+  if(cont) cont.classList.toggle("pausado", pausar);
+  if(aviso){
+    aviso.textContent = pausar ? "en pausa - activa 'auto' para ver el flujo"
+                               : "arrastra para girar";
+    aviso.classList.toggle("warn-txt", pausar);
+  }
+  // Al reanudar hay que relanzar el bucle: se corto solo al entrar en pausa.
+  if(estaba && !pausar) animar3d();
+}
+
 function toggle3d(btn){
   const c = document.getElementById("lienzo3d");
   const oculto = c.classList.toggle("oculto");
@@ -983,10 +1018,15 @@ async function cargarTodo(){
   }
 }
 
-if(document.getElementById("auto").checked){ autoTimer=setInterval(cargarTodo,5000); }
-document.getElementById("auto").addEventListener("change", ev=>{
-  if(ev.target.checked){ autoTimer=setInterval(cargarTodo,5000); }
+const chkAuto = document.getElementById("auto");
+if(chkAuto.checked){ autoTimer=setInterval(cargarTodo,5000); }
+chkAuto.addEventListener("change", ev=>{
+  const vivo = ev.target.checked;
+  if(vivo){ autoTimer=setInterval(cargarTodo,5000); cargarTodo(); }
   else{ clearInterval(autoTimer); }
+  // La escena acompana al interruptor: con "auto" apagado los datos dejan
+  // de refrescarse y la animacion mentiria.
+  pausar3d(!vivo);
 });
 document.getElementById("key")?.addEventListener("keydown",e=>{ if(e.key==="Enter")entrar(); });
 
