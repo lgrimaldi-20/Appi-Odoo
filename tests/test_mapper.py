@@ -135,3 +135,51 @@ class TestEntidadDesconocida:
     def test_entidad_sin_mapeo_lanza_error(self, mapper, odoo_encuentra_partner):
         with pytest.raises(mapper.MapeoError, match="sin mapeo"):
             mapper.mapear("desconocida", {"x": 1}, odoo_encuentra_partner)
+
+
+# --- mappings.yaml real ---
+
+
+class TestMapeoPagoReal:
+    """
+    Comprueba el mapeo de 'pago' contra el core/mappings.yaml de PRODUCCION,
+    no contra el YAML de prueba.
+
+    Por que aparte: el resto del archivo inyecta una config minima a proposito,
+    para que un cambio de mapeo no rompa los tests de la mecanica. Pero eso
+    dejaba sin cubrir el propio YAML, y ahi es donde estuvo el fallo: sin
+    partner_type, Odoo 17 rechaza el pago con "Missing required account on
+    accountable line", un error que solo aparece contra un Odoo real.
+    """
+
+    def _mapear_pago(self):
+        import importlib
+        import core.mapper as mapper_mod
+        importlib.reload(mapper_mod)
+        mapper_mod.cargar_config.cache_clear()
+
+        odoo = MagicMock()
+        odoo.execute.return_value = [{"id": 7}]
+        registro = {
+            "pago_id": "PAG-1",
+            "cliente_nif": "J-30333333-3",
+            "monto": 100.0,
+            "fecha": "2026-09-04",
+            "moneda_iso": "VES",
+            "diario_codigo": "BCO",
+        }
+        return mapper_mod.mapear("pago", registro, odoo)
+
+    def test_envia_partner_type_customer(self):
+        assert self._mapear_pago()["partner_type"] == "customer"
+
+    def test_envia_payment_type_inbound(self):
+        assert self._mapear_pago()["payment_type"] == "inbound"
+
+    def test_mapea_monto_fecha_y_fks(self):
+        valores = self._mapear_pago()
+        assert valores["amount"] == 100.0
+        assert valores["date"] == "2026-09-04"
+        # partner, moneda y diario se resuelven al id que devuelve el mock.
+        for campo in ("partner_id", "currency_id", "journal_id"):
+            assert valores[campo] == 7

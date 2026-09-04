@@ -53,6 +53,11 @@ pago:
   id_origen: pago_id
   defaults:
     payment_type: inbound           # ingreso (cobro de cliente)
+    # Obligatorio en Odoo 17: de el depende contra que cuenta se asienta la
+    # contrapartida (por cobrar si es customer, por pagar si es supplier). Sin
+    # enviarlo, create() falla con "Missing required account on accountable
+    # line", porque el valor por defecto del modelo no cuadra con un cobro.
+    partner_type: customer
   campos:
     monto: amount
     fecha: date

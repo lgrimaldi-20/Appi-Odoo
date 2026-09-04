@@ -55,6 +55,12 @@ APLICAR = "--aplicar" in sys.argv
 CUENTAS = (
     # (codigo, nombre, tipo Odoo, conciliable)
     ("1101", "Caja y Bancos", "asset_cash", False),
+    # Cuentas transitorias de pago. Odoo no asienta un cobro directamente
+    # contra el banco: lo deja en una cuenta puente hasta que el extracto
+    # bancario lo confirma. Sin ellas, account.payment.create() falla con
+    # "No puede crear un nuevo pago sin una cuenta de pagos/recibos pendientes".
+    ("1102", "Cobros Pendientes", "asset_current", True),
+    ("1103", "Pagos Pendientes", "asset_current", True),
     ("1201", "Cuentas por Cobrar Clientes", "asset_receivable", True),
     ("2101", "Cuentas por Pagar Proveedores", "liability_payable", True),
     ("2401", "IVA Debito Fiscal", "liability_current", False),
@@ -186,9 +192,104 @@ def crear_diarios(odoo, cuentas: dict) -> None:
             print(f"   ! {codigo:6} ERROR: {str(e)[:70]}")
 
 
+def fijar_cuentas_por_defecto(odoo, cuentas: dict) -> None:
+    """
+    Fija las cuentas por cobrar y por pagar por defecto de la compania.
+
+    En Odoo estas cuentas no viven en el contacto, sino en una propiedad
+    (ir.property) a nivel de compania, de la que cada partner hereda. El plan
+    contable oficial las crea al instalarse; nuestro plan minimo, no. Sin
+    ellas, un contacto queda sin cuenta por cobrar y crear un pago falla con
+    "Missing required account on accountable line" -- un mensaje que no
+    menciona al contacto y despista bastante.
+
+    Se fija la propiedad global en vez de escribir la cuenta en cada contacto:
+    asi la heredan tambien los clientes que se creen despues.
+    """
+    print("\n3. CUENTAS POR DEFECTO")
+    pares = (
+        ("property_account_receivable_id", "1201", "por cobrar"),
+        ("property_account_payable_id", "2101", "por pagar"),
+    )
+    for campo, codigo, etiqueta in pares:
+        campo_id = odoo.execute(
+            "ir.model.fields", "search_read",
+            [["model", "=", "res.partner"], ["name", "=", campo]],
+            fields=["id"], limit=1,
+        )
+        if not campo_id:
+            print(f"   ! {etiqueta}: no existe el campo {campo}")
+            continue
+        existe = odoo.execute(
+            "ir.property", "search_read",
+            [["fields_id", "=", campo_id[0]["id"]], ["res_id", "=", False]],
+            fields=["id", "value_reference"], limit=1,
+        )
+        if existe:
+            print(f"   = {etiqueta:10} ya definida ({existe[0]['value_reference']})")
+            continue
+        if not APLICAR:
+            print(f"   + {etiqueta:10} se fijaria a {codigo}")
+            continue
+        cta = cuentas.get(codigo) or _cuenta(odoo, codigo)
+        if not cta:
+            print(f"   ! {etiqueta:10} falta la cuenta {codigo}")
+            continue
+        try:
+            odoo.execute("ir.property", "create", {
+                "name": campo,
+                "fields_id": campo_id[0]["id"],
+                "type": "many2one",
+                # ir.property guarda el destino como "modelo,id" en texto.
+                "value_reference": f"account.account,{cta}",
+            })
+            print(f"   + {etiqueta:10} FIJADA a {codigo} (id={cta})")
+        except OdooExecutionError as e:
+            print(f"   ! {etiqueta:10} ERROR: {str(e)[:60]}")
+
+
+def configurar_metodos_pago(odoo, cuentas: dict) -> None:
+    """
+    Asigna las cuentas transitorias a los metodos de pago de banco y caja.
+
+    Odoo crea un account.payment.method.line "Manual" por diario y sentido,
+    pero deja su payment_account_id vacio. Mientras siga vacio, crear un pago
+    falla, porque Odoo no sabe contra que cuenta puente asentarlo. Se rellena
+    aqui y no a mano en la interfaz para que el entorno de pruebas se levante
+    entero desde este script.
+    """
+    print("\n4. METODOS DE PAGO")
+    cobros = cuentas.get("1102") or _cuenta(odoo, "1102")
+    pagos = cuentas.get("1103") or _cuenta(odoo, "1103")
+    if not (cobros and pagos):
+        print("   ! faltan las cuentas transitorias 1102/1103")
+        return
+
+    lineas = odoo.execute(
+        "account.payment.method.line", "search_read",
+        [["journal_id.type", "in", ["bank", "cash"]]],
+        fields=["id", "name", "journal_id", "payment_type", "payment_account_id"],
+    )
+    for linea in lineas:
+        diario = linea["journal_id"][1]
+        if linea.get("payment_account_id"):
+            print(f"   = {diario[:22]:22} {linea['payment_type']:8} ya configurado")
+            continue
+        if not APLICAR:
+            print(f"   + {diario[:22]:22} {linea['payment_type']:8} se configuraria")
+            continue
+        cta = cobros if linea["payment_type"] == "inbound" else pagos
+        try:
+            odoo.execute("account.payment.method.line", "write",
+                         [linea["id"]], {"payment_account_id": cta})
+            print(f"   + {diario[:22]:22} {linea['payment_type']:8} CONFIGURADO")
+        except OdooExecutionError as e:
+            print(f"   ! {diario[:22]:22} ERROR: {str(e)[:60]}")
+
+
 def poner_rif(odoo) -> None:
     """Asigna RIF ficticios a la compania y a los 3 clientes."""
-    print("\n3. IDENTIFICACION FISCAL (RIF ficticios)")
+    print("\n5. IDENTIFICACION FISCAL (RIF ficticios)")
 
     comp = odoo.execute("res.company", "search_read", [],
                         fields=["id", "name", "vat"])[0]
@@ -233,7 +334,7 @@ def poner_rif(odoo) -> None:
 
 def encolar_nota(odoo) -> None:
     """Encola una nota de entrega simulada para que la procese el poller."""
-    print("\n4. NOTA DE ENTREGA SIMULADA")
+    print("\n6. NOTA DE ENTREGA SIMULADA")
 
     from core import poller_source
     from core.ingesta_smartier import encolar_registros, nota_a_registro
@@ -281,6 +382,8 @@ def main() -> int:
 
     cuentas = crear_cuentas(odoo)
     crear_diarios(odoo, cuentas)
+    fijar_cuentas_por_defecto(odoo, cuentas)
+    configurar_metodos_pago(odoo, cuentas)
     poner_rif(odoo)
     encolar_nota(odoo)
 
