@@ -178,3 +178,4 @@ pytest tests/ -v
 - [docs/ejemplos-agentes.md](docs/ejemplos-agentes.md) - Ejemplos rapidos en Python, Node.js y curl
 - [docs/power-query-template.md](docs/power-query-template.md) - Plantilla M para Excel/Power Query
 - [docs/etl-sync.md](docs/etl-sync.md) - Sincronizacion ETL a PostgreSQL/MySQL
+- [docs/paso-a-produccion.md](docs/paso-a-produccion.md) - **Flujo automatico y checklist de produccion**
