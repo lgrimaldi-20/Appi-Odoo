@@ -20,6 +20,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from core.models_db import Base, EstadoSync, SyncLog, SyncMap
+from core.traduccion_errores import traducir
 
 # ---------------------------------------------------------------------------
 # Engine / Session
@@ -141,7 +142,10 @@ def marcar_estado(
         # sin RIF, que todavia no se puede facturar). En los demas estados se
         # limpia, porque ya no hay nada que advertir.
         if estado in (EstadoSync.ERROR, EstadoSync.PENDIENTE):
-            mapa.error = error
+            # Se traduce aqui, al guardar, y no al mostrarlo: asi el texto en
+            # castellano queda tambien en la base de control, y lo ve igual
+            # quien consulte por SQL o por /estado que quien mire el panel.
+            mapa.error = traducir(error)
         else:
             mapa.error = None
 
@@ -169,6 +173,11 @@ def log(
     detalle: Optional[str] = None,
 ) -> None:
     """Agrega una fila a la bitacora de auditoria (append-only)."""
+    # Solo se traduce el detalle de las filas en ERROR. Las de OK llevan datos
+    # tecnicos ("id_odoo=6", "apuntes=[5, 33]") que no son prosa y no deben
+    # tocarse.
+    if resultado == "ERROR":
+        detalle = traducir(detalle)
     with get_session() as session:
         session.add(
             SyncLog(

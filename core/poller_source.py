@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from sqlalchemy.types import JSON
 
 from core.models_db import _ahora
+from core.traduccion_errores import traducir
 
 # Base propia: estas tablas viven en la DB del CLIENTE, no en la de control.
 SourceBase = declarative_base()
@@ -203,5 +204,8 @@ def marcar_resultado(
             # La fila desaparecio (el cliente la borro): nada que marcar.
             return
         fila.estado = estado
-        fila.error_detalle = error_detalle if estado == "ERROR" else None
+        # Traducido tambien aqui: esta columna la lee el cliente en SU base de
+        # datos, sin pasar por el panel, y es la unica explicacion que recibe
+        # de por que su registro no llego a Odoo.
+        fila.error_detalle = traducir(error_detalle) if estado == "ERROR" else None
         fila.procesado_en = _ahora()
