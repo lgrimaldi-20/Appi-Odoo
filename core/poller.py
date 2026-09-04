@@ -30,7 +30,8 @@ from dataclasses import dataclass
 
 from core import poller_source, state_store
 from core.sincronizador import SincronizacionError, sincronizar_entidad
-from odoo_universal import OdooConnectionError, OdooUniversalAPI, get_tenant
+from core.tenants import asegurar_tenant
+from odoo_universal import OdooConnectionError, OdooUniversalAPI
 
 logger = logging.getLogger("api-odoo")
 
@@ -94,7 +95,7 @@ def procesar_lote(tenant: str = "default", limite: int = 50) -> ResultadoLote:
         logger.debug("Poller: SOURCE_DATABASE_URL no configurado; nada que hacer.")
         return ResultadoLote(leidas=0, procesadas=0, con_error=0)
 
-    odoo = get_tenant(tenant)
+    odoo = asegurar_tenant(tenant)
     lote = poller_source.tomar_lote(limite)
 
     procesadas = 0

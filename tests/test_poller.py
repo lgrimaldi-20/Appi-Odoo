@@ -194,7 +194,7 @@ def test_polling_deshabilitado_devuelve_lote_vacio(entorno, monkeypatch):
 
 def monkey_tenant(poller, odoo):
     """Hace que get_tenant (resuelto dentro de poller) devuelva el mock."""
-    poller.get_tenant = lambda *a, **k: odoo
+    poller.asegurar_tenant = lambda *a, **k: odoo
 
 
 def _contar_creates(odoo):

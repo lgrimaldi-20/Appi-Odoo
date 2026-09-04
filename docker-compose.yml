@@ -15,12 +15,26 @@ services:
     ports:
       - "6379:6379"
 
+  # Las tres bases SQLite se montan desde el host en /app/datos.
+  #
+  # Sin esto cada contenedor llevaria su PROPIA copia dentro de su sistema de
+  # ficheros: el panel mostraria una base, el worker escribiria en otra y la
+  # idempotencia -que se apoya en sync_map- dejaria de proteger, porque cada
+  # servicio veria un historial distinto. Ademas todo se perderia al parar.
+  #
+  # En produccion esto va a PostgreSQL (una sola base, varios clientes); el
+  # volumen es lo que hace utilizable SQLite mientras tanto.
   web:
     build: .
     env_file: .env
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DATABASE_URL: sqlite:////app/datos/control_turycopi.db
+      SOURCE_DATABASE_URL: sqlite:////app/datos/cola_turycopi.db
+    volumes:
+      - ./control_turycopi.db:/app/datos/control_turycopi.db
+      - ./cola_turycopi.db:/app/datos/cola_turycopi.db
     ports:
       - "8000:8000"
     depends_on:
@@ -33,6 +47,11 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DATABASE_URL: sqlite:////app/datos/control_turycopi.db
+      SOURCE_DATABASE_URL: sqlite:////app/datos/cola_turycopi.db
+    volumes:
+      - ./control_turycopi.db:/app/datos/control_turycopi.db
+      - ./cola_turycopi.db:/app/datos/cola_turycopi.db
     depends_on:
       - redis
     command: celery -A core.celery_app.celery_app worker --loglevel=info
@@ -47,6 +66,11 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DATABASE_URL: sqlite:////app/datos/control_turycopi.db
+      SOURCE_DATABASE_URL: sqlite:////app/datos/cola_turycopi.db
+    volumes:
+      - ./control_turycopi.db:/app/datos/control_turycopi.db
+      - ./cola_turycopi.db:/app/datos/cola_turycopi.db
     depends_on:
       - redis
     command: celery -A core.celery_app.celery_app beat --loglevel=info

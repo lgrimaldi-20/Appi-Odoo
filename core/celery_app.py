@@ -24,6 +24,12 @@ celery_app = Celery(
     "api_odoo",
     broker=BROKER_URL or None,
     backend=RESULT_BACKEND or None,
+    # Sin esto el worker arranca pero no conoce ninguna tarea, y rechaza todo
+    # lo que Beat le encola con "Received unregistered task". No se notaba en
+    # desarrollo: alli manda la API, que importa core.tasks al montar los
+    # routers y de paso las registra. Un worker en su propio contenedor no
+    # importa nada por su cuenta, asi que hay que decirle donde mirar.
+    include=["core.tasks"],
 )
 
 celery_app.conf.update(

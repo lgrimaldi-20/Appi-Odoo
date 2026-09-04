@@ -17,12 +17,12 @@ from core.conciliacion import ConciliacionError
 @pytest.fixture()
 def tasks(monkeypatch):
     """
-    Expone core.tasks con get_tenant parcheado. NO se recarga el modulo: las
+    Expone core.tasks con asegurar_tenant parcheado. NO se recarga el modulo: las
     tareas Celery se registran una sola vez, y parchear por nombre con
     monkeypatch (auto-revertido) evita contaminar otros tests.
     """
     import core.tasks as tasks_mod
-    monkeypatch.setattr(tasks_mod, "get_tenant", lambda t: MagicMock())
+    monkeypatch.setattr(tasks_mod, "asegurar_tenant", lambda t: MagicMock())
     return tasks_mod
 
 
@@ -101,3 +101,64 @@ class TestTareasSimples:
         res = tasks.sincronizar_factura_task.apply(args=[{"f": 1}]).get()
         assert res["id_odoo"] == 99
         assert res["estado"] == "PROCESADO"
+
+
+class TestRegistroDeTareas:
+    """
+    El worker debe conocer las tareas sin que nadie importe core.tasks por el.
+
+    Este fallo no se veia en desarrollo: alli manda la API, que importa
+    core.tasks al montar los routers y de paso las registra. Un worker en su
+    propio contenedor no importa nada por su cuenta, y rechazaba todo lo que
+    Beat le encolaba con "Received unregistered task".
+    """
+
+    def test_celery_sabe_donde_estan_las_tareas(self):
+        from core.celery_app import celery_app
+        assert "core.tasks" in (celery_app.conf.include or [])
+
+    def test_las_tareas_programadas_existen(self):
+        # Cada entrada de beat_schedule apunta a una tarea por NOMBRE; si el
+        # nombre no coincide con ninguna registrada, Beat encola al vacio.
+        import core.tasks  # noqa: F401 - registra las tareas
+        from core.celery_app import celery_app
+
+        programadas = {
+            "core.tasks.poller_task",
+            "core.tasks.ingesta_smartier_task",
+            "core.tasks.sincronizar_maestros_task",
+        }
+        assert programadas <= set(celery_app.tasks)
+
+
+class TestTenantEnElWorker:
+    """
+    El worker corre en su propio contenedor y NO importa api.py, que era donde
+    se registraba el tenant. Sin esto, todas las tareas fallaban con
+    KeyError("Tenant 'default' no registrado.") -- un fallo invisible en
+    desarrollo, donde Celery corre dentro del proceso de la API.
+    """
+
+    def test_las_tareas_no_dependen_de_api_py(self):
+        import inspect
+        import core.tasks as tasks
+        fuente = inspect.getsource(tasks)
+        assert "import api" not in fuente
+
+    def test_el_poller_tampoco(self):
+        import inspect
+        import core.poller as poller
+        assert "import api" not in inspect.getsource(poller)
+
+    def test_asegurar_tenant_registra_si_falta(self, monkeypatch):
+        import core.tenants as tenants
+        import odoo_universal
+
+        odoo_universal._tenants.pop("prueba_worker", None)
+        creado = object()
+        monkeypatch.setattr(
+            tenants, "registrar_tenant_por_defecto",
+            lambda nombre="default": odoo_universal.register_tenant(nombre, creado) or creado,
+        )
+        assert tenants.asegurar_tenant("prueba_worker") is creado
+        odoo_universal._tenants.pop("prueba_worker", None)

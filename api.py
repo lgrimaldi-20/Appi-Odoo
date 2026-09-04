@@ -16,6 +16,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from core.tenants import registrar_tenant_por_defecto
 from odoo_universal import (
     OdooConnectionError,
     OdooExecutionError,
@@ -128,18 +129,11 @@ ALLOWED_METHODS: set[str] = _lista_permitidos("ALLOWED_METHODS")
 # Conexion Odoo principal (tenant "default")
 # ---------------------------------------------------------------------------
 
-try:
-    _default_odoo = OdooUniversalAPI(
-        url=os.getenv("ODOO_URL", ""),
-        db=os.getenv("ODOO_DB", ""),
-        username=os.getenv("ODOO_USERNAME", ""),
-        password=os.getenv("ODOO_PASSWORD", ""),
-    )
-    register_tenant("default", _default_odoo)
-    logger.info("Conexion con Odoo establecida correctamente.")
-except OdooConnectionError as e:
-    logger.error("No se pudo conectar a Odoo al iniciar: %s", e)
-    _default_odoo = None
+# El registro vive en core/tenants.py y no aqui: el worker de Celery corre en
+# su propio contenedor y no importa api.py, asi que necesitaba la misma logica
+# sin arrastrar FastAPI. Un fallo de conexion deja _default_odoo a None y
+# /health responde "degradado", en vez de impedir el arranque.
+_default_odoo = registrar_tenant_por_defecto()
 
 # ---------------------------------------------------------------------------
 # Seguridad: dependencia de API Key

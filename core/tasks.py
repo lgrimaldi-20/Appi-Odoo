@@ -10,7 +10,7 @@ Tarea compuesta (procesar_venta): factura -> pago -> conciliacion, con ROLLBACK
 logico de la factura si el pago o la conciliacion fallan.
 
 Las tareas resuelven el tenant por nombre (no reciben el conector, que no es
-serializable) usando get_tenant, poblado al arrancar la app / el worker.
+serializable) con asegurar_tenant, que lo registra si aun no lo estaba.
 """
 
 import logging
@@ -26,7 +26,8 @@ from core.maestros_smartier import MaestrosError, sincronizar_clientes
 from core.poller import procesar_lote
 from core.rollback import cancelar_factura
 from core.sincronizador import SincronizacionError
-from odoo_universal import OdooConnectionError, get_tenant
+from core.tenants import asegurar_tenant
+from odoo_universal import OdooConnectionError
 
 logger = logging.getLogger("api-odoo")
 
@@ -45,7 +46,7 @@ _BACKOFF_BASE = 2  # segundos: 2, 4, 8, 16, 32...
 )
 def sincronizar_factura_task(self, registro: dict, tenant: str = "default") -> dict:
     """Crea+postea una factura en background. Reintenta si Odoo esta caido."""
-    odoo = get_tenant(tenant)
+    odoo = asegurar_tenant(tenant)
     resultado = crear_factura(registro, odoo)
     return asdict(resultado)
 
@@ -60,7 +61,7 @@ def sincronizar_factura_task(self, registro: dict, tenant: str = "default") -> d
 )
 def sincronizar_pago_task(self, registro: dict, tenant: str = "default") -> dict:
     """Crea+postea un pago en background. Reintenta si Odoo esta caido."""
-    odoo = get_tenant(tenant)
+    odoo = asegurar_tenant(tenant)
     resultado = crear_pago(registro, odoo)
     return asdict(resultado)
 
@@ -75,7 +76,7 @@ def sincronizar_pago_task(self, registro: dict, tenant: str = "default") -> dict
 )
 def ajustar_stock_task(self, registro: dict, tenant: str = "default") -> dict:
     """Aplica un ajuste de existencias en background. Idempotente por ajuste_id."""
-    odoo = get_tenant(tenant)
+    odoo = asegurar_tenant(tenant)
     return ajustar_stock(registro, odoo)
 
 
@@ -141,7 +142,7 @@ def sincronizar_maestros_task(self, tenant: str = "default",
     nota de un cliente nuevo quedaba en ERROR hasta que alguien se acordaba de
     ejecutar el script a mano.
     """
-    odoo = get_tenant(tenant)
+    odoo = asegurar_tenant(tenant)
     resultado = sincronizar_clientes(odoo, limite=limite)
     return asdict(resultado)
 
@@ -161,7 +162,7 @@ def procesar_venta_task(
     contable huerfano. Los fallos de conexion se dejan propagar para que Celery
     reintente el flujo completo (las etapas ya hechas son idempotentes).
     """
-    odoo = get_tenant(tenant)
+    odoo = asegurar_tenant(tenant)
 
     # 1. Factura (idempotente).
     res_factura = crear_factura(factura, odoo)
