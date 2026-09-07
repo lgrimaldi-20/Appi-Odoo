@@ -316,7 +316,7 @@ _PANEL_HTML = r"""<!doctype html>
     <table id="cola-tabla">
       <thead><tr>
         <th>#</th><th>Entidad</th><th>id_origen</th><th>Estado</th>
-        <th>Creado</th><th>Procesado</th><th>Error</th>
+        <th>Factura Odoo</th><th>Creado</th><th>Procesado</th><th>Error</th>
       </tr></thead>
       <tbody id="cola-body"></tbody>
     </table>
@@ -545,12 +545,14 @@ async function cargarCola(){
     partes.length ? partes.join(" · ") : "cola vacia";
 
   const b = document.getElementById("cola-body");
-  if(!d.filas.length){ b.innerHTML=`<tr><td colspan="7" class="empty">Sin filas</td></tr>`; return; }
+  if(!d.filas.length){ b.innerHTML=`<tr><td colspan="8" class="empty">Sin filas</td></tr>`; return; }
   b.innerHTML = d.filas.map(f=>`<tr>
     <td class="mono">${esc(f.id)}</td>
     <td>${esc(f.entidad)}</td>
     <td class="mono">${esc(f.id_origen)}</td>
     <td><span class="badge ${esc(f.estado)}">${esc(f.estado)}</span></td>
+    <td class="mono">${f.numero_odoo ? esc(f.numero_odoo)
+        : (f.id_odoo ? '<span class="muted">id '+esc(f.id_odoo)+'</span>' : '')}</td>
     <td class="muted">${fecha(f.creado_en)}</td>
     <td class="muted">${fecha(f.procesado_en)}</td>
     <td class="${f.estado==='ERROR'?'err-txt':'muted'}">${esc(f.error_detalle)}</td>

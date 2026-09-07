@@ -59,10 +59,18 @@ def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
 
     try:
         resultado = sincronizar_entidad(entidad, payload, odoo)
-        poller_source.marcar_resultado(fila_id, "PROCESADO")
+        # El id y el numero de la factura se escriben de vuelta en la cola: es
+        # lo que permite cruzar una nota de origen con su factura sin entrar a
+        # Odoo ni consultar la base de control del middleware.
+        poller_source.marcar_resultado(
+            fila_id, "PROCESADO",
+            id_odoo=resultado.id_odoo,
+            numero_odoo=resultado.numero,
+        )
         state_store.log(
             entidad, "poller", "OK", id_origen,
             f"cola#{fila_id} -> id_odoo={resultado.id_odoo}"
+            + (f" ({resultado.numero})" if resultado.numero else "")
             + (" (idempotente)" if resultado.idempotente else ""),
         )
         return True
@@ -77,7 +85,16 @@ def _procesar_fila(fila: dict, odoo: OdooUniversalAPI) -> bool:
         raise
     except SincronizacionError as e:
         # Fallo de datos (mapeo, create, post, descuadre): aisla la fila.
-        poller_source.marcar_resultado(fila_id, "ERROR", error_detalle=str(e))
+        #
+        # Si el fallo ocurrio DESPUES del create (al postear, o por descuadre),
+        # el documento existe en Odoo y el sincronizador guardo su id en el
+        # sync_map. Se recupera para escribirlo tambien en la cola: sin el,
+        # habria que buscar a mano que quedo a medias en Odoo.
+        mapa = state_store.buscar_mapeo(entidad, id_origen)
+        poller_source.marcar_resultado(
+            fila_id, "ERROR", error_detalle=str(e),
+            id_odoo=mapa.id_odoo if mapa else None,
+        )
         state_store.log(entidad, "poller", "ERROR", id_origen, f"cola#{fila_id}: {e}")
         logger.info("Poller: fila cola#%s en ERROR: %s", fila_id, e)
         return False

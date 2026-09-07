@@ -165,6 +165,29 @@ def ya_procesado(entidad: str, id_origen: str) -> Optional[int]:
 # Operaciones sobre sync_log
 # ---------------------------------------------------------------------------
 
+def logs_de(entidad: str, id_origen: str,
+            accion: Optional[str] = None) -> list[SyncLog]:
+    """
+    Entradas de bitacora de un registro, de la mas reciente a la mas antigua.
+
+    'accion' filtra por tipo de paso ("crear", "postear", "numero"...). Se usa
+    para recuperar datos ya anotados sin volver a consultar Odoo.
+    """
+    with get_session() as session:
+        consulta = (
+            session.query(SyncLog)
+            .filter_by(entidad=entidad, id_origen=str(id_origen))
+        )
+        if accion:
+            consulta = consulta.filter_by(accion=accion)
+        filas = consulta.order_by(SyncLog.id.desc()).all()
+        # Se desligan de la sesion: fuera del with, sus atributos ya no se
+        # podrian leer (la sesion esta cerrada).
+        for f in filas:
+            session.expunge(f)
+        return filas
+
+
 def log(
     entidad: str,
     accion: str,

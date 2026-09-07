@@ -112,3 +112,56 @@ class TestMigracion:
         # init_source_db() corre en cada arranque: debe ser idempotente.
         cola.init_source_db()
         cola.init_source_db()
+
+
+class TestResultadoEnLaCola:
+    """
+    El id y el NUMERO de la factura se escriben de vuelta en la cola.
+
+    El id_odoo es la llave tecnica; el numero ("VEN/2026/00001") es el del
+    documento fiscal, por el que pregunta cualquiera que reclame una factura.
+    Guardarlos en la cola permite cruzar la nota de origen con su factura sin
+    entrar a Odoo ni consultar la base de control del middleware.
+    """
+
+    def _fila(self, cola):
+        with cola.get_source_session() as s:
+            s.add(cola.ColaSincronizacion(
+                entidad="factura", id_origen="NE-1",
+                payload={"factura_id": "NE-1"}, estado="PENDIENTE"))
+        with cola.get_source_session() as s:
+            return s.query(cola.ColaSincronizacion).one().id
+
+    def test_guarda_numero_e_id(self, cola):
+        fid = self._fila(cola)
+        cola.marcar_resultado(fid, "PROCESADO", id_odoo=42,
+                              numero_odoo="VEN/2026/00001")
+        with cola.get_source_session() as s:
+            f = s.get(cola.ColaSincronizacion, fid)
+            assert (f.id_odoo, f.numero_odoo) == (42, "VEN/2026/00001")
+
+    def test_un_fallo_tras_crear_conserva_el_id(self, cola):
+        # Si el create fue bien y el post fallo, el documento existe en Odoo:
+        # perder su id obligaria a buscar a mano que quedo a medias.
+        fid = self._fila(cola)
+        cola.marcar_resultado(fid, "ERROR", error_detalle="fallo al postear",
+                              id_odoo=42)
+        with cola.get_source_session() as s:
+            f = s.get(cola.ColaSincronizacion, fid)
+            assert f.id_odoo == 42
+            assert f.estado == "ERROR"
+
+    def test_sin_valores_no_pisa_lo_ya_guardado(self, cola):
+        fid = self._fila(cola)
+        cola.marcar_resultado(fid, "PROCESADO", id_odoo=42,
+                              numero_odoo="VEN/2026/00001")
+        cola.marcar_resultado(fid, "PROCESADO")   # sin id ni numero
+        with cola.get_source_session() as s:
+            f = s.get(cola.ColaSincronizacion, fid)
+            assert f.numero_odoo == "VEN/2026/00001"
+
+    def test_la_migracion_anade_las_dos_columnas(self, cola):
+        from sqlalchemy import inspect
+        cols = {c["name"] for c in
+                inspect(cola._engine).get_columns("cola_sincronizacion")}
+        assert {"id_odoo", "numero_odoo"} <= cols

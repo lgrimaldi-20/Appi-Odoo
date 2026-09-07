@@ -85,6 +85,15 @@ class ColaSincronizacion(SourceBase):
     # guardar, y no deben fallar por ello.
     payload_original = Column(JSON, nullable=True)
     estado = Column(String(20), nullable=False, default="PENDIENTE")
+    # Resultado en Odoo, escrito de vuelta al procesar la fila.
+    #
+    # id_odoo es la llave tecnica; numero_odoo es el numero fiscal
+    # ("VEN/2026/00001"), que es por el que pregunta cualquiera que reclame una
+    # factura. Se guardan AQUI, en la base de origen, y no solo en el sync_map,
+    # para que el sistema del cliente pueda cruzar su nota con la factura sin
+    # tener que entrar a Odoo ni consultar la base de control del middleware.
+    id_odoo = Column(Integer, nullable=True)
+    numero_odoo = Column(String(64), nullable=True)
     error_detalle = Column(Text, nullable=True)
     creado_en = Column(DateTime(timezone=True), default=_ahora, nullable=False)
     procesado_en = Column(DateTime(timezone=True), nullable=True)
@@ -160,35 +169,47 @@ def init_source_db() -> None:
     _migrar_payload_original()
 
 
+# Columnas anadidas despues de la version inicial de la tabla, con su tipo por
+# dialecto. Cada entrada: (nombre, tipo PostgreSQL, tipo SQLite).
+_COLUMNAS_NUEVAS = (
+    # SQLite no tiene tipo JSON nativo, pero acepta el mismo contenido en TEXT
+    # y SQLAlchemy lo serializa igual.
+    ("payload_original", "JSON", "TEXT"),
+    ("id_odoo", "INTEGER", "INTEGER"),
+    ("numero_odoo", "VARCHAR(64)", "VARCHAR(64)"),
+)
+
+
 def _migrar_payload_original() -> None:
     """
-    Anade la columna payload_original a una cola que ya existia.
+    Anade a una cola ya existente las columnas que se incorporaron despues.
 
     create_all() crea tablas que faltan, pero NUNCA altera una existente: en una
     base ya en marcha la columna nueva no aparece y todo insert falla. Se hace
-    aqui, y no con una herramienta de migraciones, porque es una sola columna
-    nullable y anadir Alembic al proyecto por esto seria desproporcionado.
+    aqui, y no con una herramienta de migraciones, porque son columnas nullable
+    y anadir Alembic al proyecto por esto seria desproporcionado.
 
-    Si el proyecto acumula mas cambios de esquema, este es el punto donde toca
-    cambiar de opinion y adoptar migraciones de verdad.
+    Si el proyecto acumula cambios de esquema mas complejos -renombrar, cambiar
+    tipos, migrar datos-, este es el punto donde toca cambiar de opinion y
+    adoptar migraciones de verdad.
     """
     from sqlalchemy import inspect, text
 
     inspector = inspect(_engine)
     if not inspector.has_table("cola_sincronizacion"):
         return
-    columnas = {c["name"] for c in inspector.get_columns("cola_sincronizacion")}
-    if "payload_original" in columnas:
-        return
+    existentes = {c["name"] for c in inspector.get_columns("cola_sincronizacion")}
+    es_postgres = _engine.dialect.name == "postgresql"
 
-    # JSON en PostgreSQL; TEXT en SQLite, que no tiene tipo JSON nativo pero
-    # acepta el mismo contenido y SQLAlchemy lo serializa igual.
-    tipo = "JSON" if _engine.dialect.name == "postgresql" else "TEXT"
-    with _engine.begin() as con:
-        con.execute(text(
-            f"ALTER TABLE cola_sincronizacion ADD COLUMN payload_original {tipo}"
-        ))
-    logger.info("Cola: anadida la columna payload_original.")
+    for nombre, tipo_pg, tipo_sqlite in _COLUMNAS_NUEVAS:
+        if nombre in existentes:
+            continue
+        tipo = tipo_pg if es_postgres else tipo_sqlite
+        with _engine.begin() as con:
+            con.execute(text(
+                f"ALTER TABLE cola_sincronizacion ADD COLUMN {nombre} {tipo}"
+            ))
+        logger.info("Cola: anadida la columna %s.", nombre)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +259,8 @@ def marcar_resultado(
     fila_id: int,
     estado: str,
     error_detalle: Optional[str] = None,
+    id_odoo: Optional[int] = None,
+    numero_odoo: Optional[str] = None,
 ) -> None:
     """
     Escribe el resultado de una fila de vuelta en la DB del cliente: estado
@@ -254,4 +277,11 @@ def marcar_resultado(
         # datos, sin pasar por el panel, y es la unica explicacion que recibe
         # de por que su registro no llego a Odoo.
         fila.error_detalle = traducir(error_detalle) if estado == "ERROR" else None
+        # Solo se escriben si vienen con valor: un fallo posterior al create
+        # (por ejemplo al postear) deja la fila en ERROR pero con el id_odoo ya
+        # asignado, y perderlo obligaria a buscar a mano que quedo a medias.
+        if id_odoo is not None:
+            fila.id_odoo = id_odoo
+        if numero_odoo:
+            fila.numero_odoo = numero_odoo
         fila.procesado_en = _ahora()

@@ -70,6 +70,16 @@ def id_origen_de(entidad: str, registro: dict) -> str:
     return str(registro[campo])
 
 
+def modelo_de(entidad: str) -> str:
+    """
+    Modelo Odoo destino de una entidad (p.ej. "factura" -> "account.move").
+
+    Lo necesita quien tiene que consultar el documento sin haber pasado por el
+    mapeo completo, como la ruta idempotente del sincronizador.
+    """
+    return _config_entidad(entidad)["model"]
+
+
 def _resolver_fk(
     odoo: OdooUniversalAPI,
     campo_odoo: str,

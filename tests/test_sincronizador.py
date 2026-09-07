@@ -133,3 +133,87 @@ class TestErrores:
         assert mapa.estado == "ERROR"
         assert mapa.id_odoo == 777          # se creo pero no se posteo
         assert "777" in mapa.error
+
+
+class TestNumeroDeFactura:
+    """
+    Tras postear se lee el numero que Odoo asigno (VEN/2026/00001).
+
+    Sin el, cruzar el sistema de origen con Odoo obliga a entrar a Odoo a
+    mirarlo: el id_odoo es una llave interna que no aparece en ningun
+    documento fiscal.
+    """
+
+    def _odoo(self, respuesta_read):
+        odoo = MagicMock()
+
+        def responder(model, metodo, *a, **k):
+            if metodo == "create":
+                return 555
+            if metodo == "read":
+                return respuesta_read
+            return True
+
+        odoo.execute.side_effect = responder
+        return odoo
+
+    def test_devuelve_el_numero_tras_postear(self, entorno):
+        sincronizador, _, _ = entorno
+        odoo = self._odoo([{"name": "VEN/2026/00001"}])
+        res = sincronizador.sincronizar_entidad("factura", {"fid": "F-9"}, odoo)
+        assert res.numero == "VEN/2026/00001"
+
+    def test_un_borrador_sin_numerar_no_inventa_nada(self, entorno):
+        # Odoo devuelve False en los campos vacios; no debe acabar como "False".
+        sincronizador, _, _ = entorno
+        odoo = self._odoo([{"name": False}])
+        res = sincronizador.sincronizar_entidad("factura", {"fid": "F-10"}, odoo)
+        assert res.numero == ""
+
+    def test_un_fallo_al_leer_el_numero_no_rompe_la_sincronizacion(self, entorno):
+        # El documento ya esta creado y posteado: perder la sincronizacion
+        # entera por no leer una etiqueta seria desproporcionado.
+        from odoo_universal import OdooExecutionError
+        sincronizador, _, _ = entorno
+        odoo = MagicMock()
+
+        def responder(model, metodo, *a, **k):
+            if metodo == "create":
+                return 555
+            if metodo == "read":
+                raise OdooExecutionError("sin permiso de lectura")
+            return True
+
+        odoo.execute.side_effect = responder
+        res = sincronizador.sincronizar_entidad("factura", {"fid": "F-11"}, odoo)
+        assert res.estado == "PROCESADO"
+        assert res.numero == ""
+
+    def test_una_respuesta_inesperada_no_rompe(self, entorno):
+        # Un mock (o un Odoo raro) puede devolver algo que no sea una lista de
+        # dicts; el numero es informativo y nunca debe tumbar el flujo.
+        sincronizador, _, _ = entorno
+        odoo = self._odoo(True)
+        res = sincronizador.sincronizar_entidad("factura", {"fid": "F-12"}, odoo)
+        assert res.estado == "PROCESADO"
+        assert res.numero == ""
+
+    def test_el_reenvio_devuelve_el_numero_sin_consultar_odoo(self, entorno):
+        """
+        La idempotencia promete NO tocar Odoo si el registro ya se proceso.
+
+        El numero se recupera de la bitacora, no con un read(): consultarlo
+        aqui gastaria una llamada a Odoo por cada reenvio y romperia esa
+        garantia, que es justo lo que protege de duplicar trabajo.
+        """
+        sincronizador, _, _ = entorno
+        odoo = self._odoo([{"name": "VEN/2026/00042"}])
+        primero = sincronizador.sincronizar_entidad("factura", {"fid": "F-20"}, odoo)
+        assert primero.numero == "VEN/2026/00042"
+
+        llamadas = odoo.execute.call_count
+        segundo = sincronizador.sincronizar_entidad("factura", {"fid": "F-20"}, odoo)
+
+        assert segundo.idempotente is True
+        assert segundo.numero == "VEN/2026/00042"
+        assert odoo.execute.call_count == llamadas, "no debe consultar Odoo"

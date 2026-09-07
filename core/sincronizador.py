@@ -38,6 +38,9 @@ class ResultadoSync:
     id_odoo: int
     estado: str
     idempotente: bool  # True si ya estaba procesado y no se toco Odoo
+    # Numero fiscal que Odoo asigno al postear (p.ej. "VEN/2026/00001").
+    # Vacio si no se pudo leer o si el documento aun no esta numerado.
+    numero: str = ""
 
 
 def sincronizar_entidad(
@@ -74,6 +77,11 @@ def sincronizar_entidad(
             id_odoo=id_odoo_existente,
             estado=EstadoSync.PROCESADO.value,
             idempotente=True,
+            # El numero se recupera de la BITACORA, no de Odoo: la idempotencia
+            # promete no tocar Odoo cuando el registro ya se proceso, y una
+            # lectura aqui romperia esa garantia (ademas de gastar una llamada
+            # por cada reenvio). Se anoto al postear, en el paso 6.
+            numero=_numero_guardado(entidad, id_origen),
         )
 
     conf = mapper.cargar_config()[entidad]
@@ -141,10 +149,62 @@ def sincronizar_entidad(
             raise SincronizacionError(f"Descuadre de total en Odoo (id={id_odoo}): {e}") from e
 
     # 6. PROCESADO.
+    #
+    # Se lee el numero que Odoo asigno al postear (VEN/2026/00001). El id_odoo
+    # es la llave tecnica, pero el NUMERO es el que aparece en el documento
+    # fiscal y por el que pregunta cualquiera que reclame una factura: sin el,
+    # cruzar el sistema de origen con Odoo obliga a entrar a Odoo a mirarlo.
+    numero = _numero_documento(odoo, model_odoo, id_odoo)
     state_store.marcar_estado(entidad, id_origen, EstadoSync.PROCESADO)
+    if numero:
+        state_store.log(entidad, "numero", "OK", id_origen, numero)
     return ResultadoSync(
         id_origen=id_origen,
         id_odoo=id_odoo,
         estado=EstadoSync.PROCESADO.value,
         idempotente=False,
+        numero=numero,
     )
+
+
+def _numero_guardado(entidad: str, id_origen: str) -> str:
+    """
+    Recupera de la bitacora el numero anotado al postear.
+
+    Evita consultar Odoo en la ruta idempotente, donde la promesa explicita es
+    no tocarlo. Devuelve "" si no consta -por ejemplo, en registros procesados
+    antes de que se empezara a guardar el numero-.
+    """
+    try:
+        for entrada in state_store.logs_de(entidad, id_origen, accion="numero"):
+            if entrada.detalle:
+                return entrada.detalle
+    except Exception:  # noqa: BLE001 - dato informativo, nunca debe romper
+        pass
+    return ""
+
+
+def _numero_documento(odoo: OdooUniversalAPI, model_odoo: str,
+                      id_odoo: int) -> str:
+    """
+    Lee el 'name' del documento recien posteado (su numero fiscal).
+
+    Devuelve "" si no se puede leer. Es deliberado que no lance: el documento
+    ya esta creado y posteado correctamente, y perder la sincronizacion entera
+    por no haber podido leer una etiqueta seria desproporcionado. El numero se
+    puede recuperar despues a partir del id_odoo, que si esta guardado.
+    """
+    try:
+        datos = odoo.execute(model_odoo, "read", [id_odoo], fields=["name"])
+    except OdooExecutionError:
+        return ""
+    # Se comprueba la FORMA de la respuesta, no solo que exista: el numero es
+    # informativo y no debe tumbar una sincronizacion ya completada porque
+    # llegara algo distinto de lo esperado.
+    if not isinstance(datos, (list, tuple)) or not datos:
+        return ""
+    if not isinstance(datos[0], dict):
+        return ""
+    nombre = datos[0].get("name")
+    # Odoo devuelve False cuando el campo esta vacio (borrador sin numerar).
+    return str(nombre) if nombre else ""
