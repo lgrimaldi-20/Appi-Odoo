@@ -29,6 +29,7 @@ La conexion se toma de SOURCE_DATABASE_URL (independiente de DATABASE_URL, que
 es la base de CONTROL del middleware).
 """
 
+import logging
 import os
 from contextlib import contextmanager
 from typing import Optional
@@ -50,6 +51,8 @@ from sqlalchemy.types import JSON
 from core.models_db import _ahora
 from core.traduccion_errores import traducir
 
+logger = logging.getLogger("api-odoo")
+
 # Base propia: estas tablas viven en la DB del CLIENTE, no en la de control.
 SourceBase = declarative_base()
 
@@ -70,6 +73,17 @@ class ColaSincronizacion(SourceBase):
     entidad = Column(String(50), nullable=False)        # clave en mappings.yaml
     id_origen = Column(String(100), nullable=False)      # id de negocio (idempotencia)
     payload = Column(JSON, nullable=False)               # registro para el mapper
+    # Respuesta ORIGINAL del sistema de origen, tal cual llego, sin traducir.
+    #
+    # 'payload' guarda solo lo que el mapper necesita: si manana Smartier anade
+    # un campo que hoy ignoramos, no quedaria rastro de el. Esta columna
+    # conserva el documento completo, de modo que el histórico no dependa de
+    # que la API de origen siga devolviendo la nota mas adelante.
+    #
+    # Nullable a proposito: las filas encoladas a mano (scripts de prueba, o el
+    # cliente escribiendo directo en su tabla) no tienen un original que
+    # guardar, y no deben fallar por ello.
+    payload_original = Column(JSON, nullable=True)
     estado = Column(String(20), nullable=False, default="PENDIENTE")
     error_detalle = Column(Text, nullable=True)
     creado_en = Column(DateTime(timezone=True), default=_ahora, nullable=False)
@@ -143,6 +157,38 @@ def init_source_db() -> None:
     """
     _init_engine()
     SourceBase.metadata.create_all(bind=_engine)
+    _migrar_payload_original()
+
+
+def _migrar_payload_original() -> None:
+    """
+    Anade la columna payload_original a una cola que ya existia.
+
+    create_all() crea tablas que faltan, pero NUNCA altera una existente: en una
+    base ya en marcha la columna nueva no aparece y todo insert falla. Se hace
+    aqui, y no con una herramienta de migraciones, porque es una sola columna
+    nullable y anadir Alembic al proyecto por esto seria desproporcionado.
+
+    Si el proyecto acumula mas cambios de esquema, este es el punto donde toca
+    cambiar de opinion y adoptar migraciones de verdad.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(_engine)
+    if not inspector.has_table("cola_sincronizacion"):
+        return
+    columnas = {c["name"] for c in inspector.get_columns("cola_sincronizacion")}
+    if "payload_original" in columnas:
+        return
+
+    # JSON en PostgreSQL; TEXT en SQLite, que no tiene tipo JSON nativo pero
+    # acepta el mismo contenido y SQLAlchemy lo serializa igual.
+    tipo = "JSON" if _engine.dialect.name == "postgresql" else "TEXT"
+    with _engine.begin() as con:
+        con.execute(text(
+            f"ALTER TABLE cola_sincronizacion ADD COLUMN payload_original {tipo}"
+        ))
+    logger.info("Cola: anadida la columna payload_original.")
 
 
 # ---------------------------------------------------------------------------

@@ -219,11 +219,16 @@ def _ya_en_cola(session, entidad: str, id_origen: str) -> bool:
     ).first() is not None
 
 
-def encolar_registros(entidad: str, registros: list[tuple[str, dict]]) -> tuple[int, int]:
+def encolar_registros(entidad: str, registros: list[tuple]) -> tuple[int, int]:
     """
     Inserta registros en la cola de sincronizacion, saltando los repetidos.
 
-    Recibe una lista de (id_origen, payload). Devuelve (encolados, omitidos).
+    Recibe una lista de (id_origen, payload) o (id_origen, payload, original),
+    donde 'original' es la respuesta sin traducir del sistema de origen. Se
+    admiten las dos formas para no romper a quien encole sin original (los
+    scripts de prueba, por ejemplo).
+
+    Devuelve (encolados, omitidos).
     """
     if not registros:
         return 0, 0
@@ -231,7 +236,9 @@ def encolar_registros(entidad: str, registros: list[tuple[str, dict]]) -> tuple[
     encolados = 0
     omitidos = 0
     with poller_source.get_source_session() as session:
-        for id_origen, payload in registros:
+        for registro in registros:
+            id_origen, payload = registro[0], registro[1]
+            original = registro[2] if len(registro) > 2 else None
             if _ya_en_cola(session, entidad, id_origen):
                 omitidos += 1
                 continue
@@ -239,6 +246,7 @@ def encolar_registros(entidad: str, registros: list[tuple[str, dict]]) -> tuple[
                 entidad=entidad,
                 id_origen=id_origen,
                 payload=payload,
+                payload_original=original,
                 estado="PENDIENTE",
             ))
             encolados += 1
@@ -285,7 +293,8 @@ def ingerir_notas_entrega(
         filtros["FechaDesde"] = marca
 
     leidas = 0
-    a_encolar: list[tuple[str, dict]] = []
+    # (id_origen, registro traducido, nota ORIGINAL de Smartier)
+    a_encolar: list[tuple[str, dict, dict]] = []
     mas_reciente = marca
 
     try:
@@ -302,7 +311,9 @@ def ingerir_notas_entrega(
                 continue
 
             registro = nota_a_registro(nota)
-            a_encolar.append((registro["factura_id"], registro))
+            # La nota entera viaja junto al registro traducido: es el unico
+            # rastro del documento tal como lo emitio Smartier.
+            a_encolar.append((registro["factura_id"], registro, nota))
 
             fecha = (nota.get("FechaReferencia") or nota.get("Fecha")
                      or nota.get("FechaEntregaReal"))

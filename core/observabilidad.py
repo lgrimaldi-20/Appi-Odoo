@@ -223,7 +223,45 @@ def cola_poller(limite: int = 100, estado: Optional[str] = None) -> dict:
                     "error_detalle": f.error_detalle,
                     "creado_en": _iso(f.creado_en),
                     "procesado_en": _iso(f.procesado_en),
+                    # Solo se indica SI hay original, no su contenido: el
+                    # listado devuelve hasta 100 filas y meter el documento
+                    # entero en cada una haria la respuesta inmanejable.
+                    # Para verlo esta detalle_cola().
+                    "tiene_original": f.payload_original is not None,
                 }
                 for f in filas
             ],
+        }
+
+
+def detalle_cola(fila_id: int) -> dict:
+    """
+    Devuelve una fila de la cola con su payload y el ORIGINAL de Smartier.
+
+    Es el unico sitio donde se puede consultar el documento tal como lo emitio
+    el sistema de origen: el listado solo dice si existe. Sirve para auditar
+    una factura hacia atras y para reconstruir un caso cuando el dato traducido
+    no basta.
+    """
+    from core import poller_source
+
+    if not poller_source.polling_habilitado():
+        return {"habilitado": False}
+
+    with poller_source.get_source_session() as session:
+        f = session.get(poller_source.ColaSincronizacion, fila_id)
+        if f is None:
+            return {"habilitado": True, "encontrado": False}
+        return {
+            "habilitado": True,
+            "encontrado": True,
+            "id": f.id,
+            "entidad": f.entidad,
+            "id_origen": f.id_origen,
+            "estado": f.estado,
+            "error_detalle": f.error_detalle,
+            "creado_en": _iso(f.creado_en),
+            "procesado_en": _iso(f.procesado_en),
+            "payload": f.payload,
+            "payload_original": f.payload_original,
         }

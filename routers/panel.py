@@ -69,6 +69,18 @@ def api_detalle(entidad: str, id_origen: str):
     return observabilidad.detalle_registro(entidad, id_origen)
 
 
+@datos.get("/cola/{fila_id}")
+def api_cola_detalle(fila_id: int):
+    """
+    Una fila de la cola con su payload y el ORIGINAL de Smartier.
+
+    Va aparte del listado a proposito: el documento original de cada fila haria
+    la respuesta del listado inmanejable, y solo se necesita al auditar un caso
+    concreto.
+    """
+    return observabilidad.detalle_cola(fila_id)
+
+
 @datos.get("/cola")
 def api_cola(
     estado: str | None = Query(None, description="PENDIENTE | PROCESADO | ERROR"),
