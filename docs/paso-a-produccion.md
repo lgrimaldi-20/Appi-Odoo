@@ -4,6 +4,9 @@ Estado a 2026-09-04. Recoge lo añadido en la última tanda: sincronización
 automática de clientes, servicio `beat`, registro compartido de tenant y
 traducción de errores.
 
+Para **dónde** se despliega (EC2 + RDS, cambios del `docker-compose`, HTTPS),
+ver [infraestructura-produccion.md](infraestructura-produccion.md).
+
 ---
 
 ## 1. El flujo, de punta a punta
