@@ -102,3 +102,34 @@ class TestContratoDeLaApi:
     def test_la_pagina_del_panel_no_pide_clave(self):
         # El shell HTML es publico a proposito: los datos van protegidos.
         assert client.get("/panel").status_code == 200
+
+
+class TestAutoRefrescoArrancaAlAcceder:
+    """
+    El temporizador de refresco debe arrancar al ACCEDER, no al cargar.
+
+    Bug observado en el panel: mientras se ve el login todavia no hay API Key,
+    y el temporizador lanzado al cargar la pagina solo producia 401. El primero
+    de ellos apagaba el auto-refresco (cargarTodo() lo detiene ante una clave
+    invalida), asi que al entrar ya no quedaba temporizador vivo: el panel se
+    quedaba congelado y habia que pulsar "Poller ahora" a mano para ver algo.
+    """
+
+    def test_no_se_arranca_al_cargar_la_pagina(self, html):
+        # La forma antigua era 'if(chkAuto.checked){ autoTimer=setInterval(...) }'
+        # suelta en el cuerpo del script, fuera de toda funcion.
+        assert "if(chkAuto.checked){ autoTimer=setInterval(cargarTodo,5000); }" not in html
+
+    def test_acceder_arranca_el_refresco(self, html):
+        cuerpo = html.split("function acceder(")[1].split("function entrar(")[0]
+        assert "arrancarAuto()" in cuerpo
+
+    def test_arrancar_limpia_el_temporizador_anterior(self, html):
+        # Sin el clearInterval, entrar dos veces (login tras sesion caducada)
+        # dejaria dos temporizadores pidiendo datos en paralelo.
+        cuerpo = html.split("function arrancarAuto(")[1].split("chkAuto.addEventListener")[0]
+        assert "clearInterval(autoTimer)" in cuerpo
+
+    def test_respeta_la_casilla_desmarcada(self, html):
+        cuerpo = html.split("function arrancarAuto(")[1].split("chkAuto.addEventListener")[0]
+        assert "chkAuto.checked" in cuerpo

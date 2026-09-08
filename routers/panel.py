@@ -390,6 +390,8 @@ function acceder(clave, esAutologin){
     document.getElementById("gate").classList.add("hide");
     document.getElementById("app").classList.remove("hide");
     cargarTodo();
+    // El auto-refresco empieza aqui, con la clave ya validada.
+    arrancarAuto();
   }).catch(e=>{
     // Una clave guardada que ya no vale se descarta; una recien tecleada se
     // conserva en pantalla para que el usuario pueda corregirla.
@@ -1072,10 +1074,21 @@ async function cargarTodo(){
 }
 
 const chkAuto = document.getElementById("auto");
-if(chkAuto.checked){ autoTimer=setInterval(cargarTodo,5000); }
+
+// Arranca el refresco periodico. Se llama al ACCEDER, no al cargar la pagina:
+// mientras se ve el login todavia no hay API Key, y un temporizador lanzado
+// antes solo produce 401 -- y el primero de ellos apagaba el auto-refresco
+// (cargarTodo() lo detiene ante una clave invalida), de modo que al entrar ya
+// no quedaba temporizador vivo y el panel se quedaba congelado hasta pulsar
+// "Poller ahora" a mano.
+function arrancarAuto(){
+  clearInterval(autoTimer);          // nunca dos temporizadores a la vez
+  if(chkAuto.checked){ autoTimer = setInterval(cargarTodo, 5000); }
+}
+
 chkAuto.addEventListener("change", ev=>{
   const vivo = ev.target.checked;
-  if(vivo){ autoTimer=setInterval(cargarTodo,5000); cargarTodo(); }
+  if(vivo){ arrancarAuto(); cargarTodo(); }
   else{ clearInterval(autoTimer); }
   // La escena acompana al interruptor: con "auto" apagado los datos dejan
   // de refrescarse y la animacion mentiria.
