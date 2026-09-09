@@ -307,7 +307,7 @@ class TestCamposFiscales:
         assert "vat" not in sin_rif
 
         con_rif = clientes_mod._valores_actualizacion(
-            _cliente(Documento={"Tipo": 6, "Contenido": "J-40123456-7"})
+            _cliente(Documento={"Tipo": 30, "Contenido": "J-40123456-7"})
         )
         assert con_rif["vat"] == "J-40123456-7"
 

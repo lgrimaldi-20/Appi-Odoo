@@ -38,7 +38,9 @@ def cliente_smartier(**kw):
         "Tipo": "Contacto",
         "Estado": "Habilitado",
         "Email": "junior@ejemplo.com",
-        "Documento": {"Tipo": 6, "Contenido": "J-30111111-1"},
+        # Tipo 30 = RIF Venezolano. El 6 es un documento GENERICO: su
+        # contenido no valida formato en origen y no cuenta como RIF.
+        "Documento": {"Tipo": 30, "Contenido": "J-30111111-1"},
     }
     base.update(kw)
     return base
@@ -202,3 +204,52 @@ class TestEstadoEnElPanel:
         r = maestros.ResultadoMaestros()
         maestros.sincronizar_cliente(cliente_smartier(), odoo, r)
         assert state_store.buscar_mapeo("cliente", "6").estado == "PROCESADO"
+
+
+class TestTipoDeDocumento:
+    """
+    Solo los tipos 29 (CI) y 30 (RIF) son identificacion fiscal.
+
+    Smartier confirmo (2026-09-09) que el tipo 6 es "Documento de identidad"
+    generico, con validacion permisiva: acepta letras, digitos y espacios. Su
+    contenido NO es un RIF. Antes se enviaba a Odoo como 'vat' sin mirar el
+    tipo, asi que cualquier cosa escrita ahi acababa en el campo fiscal de la
+    factura.
+    """
+
+    def _doc(self, tipo, contenido="J-30111111-1"):
+        return cliente_smartier(Documento={"Tipo": tipo, "Contenido": contenido})
+
+    def test_rif_venezolano_se_acepta(self, maestros):
+        assert maestros.rif_de(self._doc(30)) == "J-30111111-1"
+
+    def test_ci_venezolana_se_acepta(self, maestros):
+        # Persona natural: tambien es identificacion fiscal valida en Odoo.
+        assert maestros.rif_de(self._doc(29, "V-12345678")) == "V-12345678"
+
+    def test_documento_generico_no_cuenta_como_rif(self, maestros):
+        assert maestros.rif_de(self._doc(6)) is None
+
+    def test_registro_tributario_generico_tampoco(self, maestros):
+        # El 7 es el generico de empresas; Smartier tampoco valida su formato.
+        assert maestros.rif_de(self._doc(7)) is None
+
+    def test_sin_tipo_no_se_asume_fiscal(self, maestros):
+        assert maestros.rif_de(self._doc(None)) is None
+
+    def test_un_tipo_no_numerico_no_rompe(self, maestros):
+        assert maestros.rif_de(self._doc("RIF")) is None
+
+    def test_contenido_vacio_sigue_siendo_none(self, maestros):
+        assert maestros.rif_de(self._doc(30, None)) is None
+
+    def test_un_generico_con_contenido_queda_pendiente(self, maestros):
+        # El contacto se crea igual, pero sin poder facturarse: es la
+        # situacion real, y el panel debe distinguirla de un cliente listo.
+        import core.state_store as state_store
+        maestros._LOCALIZACION_VE = False
+        odoo = MagicMock()
+        odoo.execute.side_effect = [[], 55]     # sin RIF no se busca por vat
+        r = maestros.ResultadoMaestros()
+        maestros.sincronizar_cliente(self._doc(6, "algo escrito"), odoo, r)
+        assert state_store.buscar_mapeo("cliente", "6").estado == "PENDIENTE"

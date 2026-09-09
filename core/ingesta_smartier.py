@@ -62,6 +62,25 @@ ESTADOS_A_FACTURAR = tuple(
 # Traduccion del enum de moneda de Smartier al codigo ISO que espera Odoo.
 MONEDA_ISO = {"Nacional": "VES", "Extranjera": "USD"}
 
+# Nombre del filtro de fecha que acota la lectura a lo nuevo. VACIO A PROPOSITO.
+#
+# Se enviaba "FechaDesde", un nombre supuesto. Comprobado el 2026-09-09 contra
+# la API real: NO existe. Smartier confirmo (consulta 6 de su informe) que un
+# filtro no reconocido se DESCARTA en silencio -la API responde 200 con el
+# listado completo-, asi que enviarlo no daba error pero tampoco acotaba nada:
+# cada pasada se traia el historico entero. Verificado con su propia prueba,
+# comparar el Count con filtro contra el Count sin filtro:
+#
+#     sin filtro        Count=4      NombreContains=ZZZ   Count=0  (si filtra)
+#     FechaDesde=2099   Count=4      FiltroInventado=xyz  Count=4  (no filtra)
+#
+# Los filtros documentados de /external/clientes no incluyen ninguno de fecha.
+# Mientras no se confirme cual es -o si existe para notas-entrega-, se lee sin
+# acotar: la marca de agua se sigue guardando y el antiduplicado evita
+# reprocesar, pero el coste de la lectura crece con el historico. Se activa
+# poniendo el nombre real en SMARTIER_FILTRO_FECHA, sin tocar codigo.
+FILTRO_FECHA = os.getenv("SMARTIER_FILTRO_FECHA", "").strip()
+
 
 @dataclass
 class ResultadoIngesta:
@@ -119,15 +138,19 @@ def _extraer_nif(cliente: dict) -> Optional[str]:
     """
     Saca la identificacion fiscal del cliente de Smartier.
 
-    El DTO trae Documento = {"Tipo": <int>, "Contenido": <str|null>}. Hoy viene
-    null en todos los clientes de pruebas; se devuelve None y el poller dejara
-    la fila en ERROR con un mensaje explicito.
+    Delega en maestros_smartier.rif_de para no tener dos criterios distintos:
+    la nota de entrega y la ficha del cliente deben coincidir en que consideran
+    identificacion fiscal, o la factura buscaria un partner por un 'vat' que el
+    sincronizador de clientes nunca escribio.
+
+    Solo los tipos 29 (CI) y 30 (RIF) cuentan; los genericos 6 y 7 no validan
+    formato en origen y su contenido no es un RIF. Sin identificacion se
+    devuelve None y el poller deja la fila en ERROR con un mensaje explicito,
+    en vez de descartarla en silencio.
     """
-    doc = cliente.get("Documento") or {}
-    contenido = doc.get("Contenido")
-    if contenido and str(contenido).strip():
-        return str(contenido).strip()
-    return None
+    from core.maestros_smartier import rif_de
+
+    return rif_de(cliente)
 
 
 def nota_a_registro(nota: dict) -> dict:
@@ -287,10 +310,8 @@ def ingerir_notas_entrega(
 
     marca = desde or _leer_marca(RUTA_NOTAS)
     filtros = {}
-    if marca:
-        # El nombre exacto del filtro depende de la API; se envia el habitual y
-        # si el endpoint lo ignora, el antiduplicado evita reprocesar de mas.
-        filtros["FechaDesde"] = marca
+    if marca and FILTRO_FECHA:
+        filtros[FILTRO_FECHA] = marca
 
     leidas = 0
     # (id_origen, registro traducido, nota ORIGINAL de Smartier)

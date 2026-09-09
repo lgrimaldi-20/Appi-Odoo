@@ -20,7 +20,8 @@ def _cliente(con_rif=True):
         "Nombre": "LISBETH SANCHEZ",
         "Tipo": "Contacto",
         "Estado": "Habilitado",
-        "Documento": {"Tipo": 6, "Contenido": "J-12345678-9" if con_rif else None},
+        # Tipo 30 = RIF Venezolano (el 6 es generico y no cuenta como RIF).
+        "Documento": {"Tipo": 30, "Contenido": "J-12345678-9" if con_rif else None},
         "RazonSocial": "TURICOPY IMPRESOS C.A." if con_rif else None,
     }
 
@@ -246,3 +247,39 @@ class TestClienteHttp:
         with patch.object(cli, "get", return_value={"Data": [], "Count": 0}) as mock:
             cli.listar("/external/notas-entrega", page_size=500)
             assert mock.call_args[0][1]["PageSize"] == 200
+
+
+class TestFiltroDeFecha:
+    """
+    No se envia un filtro de fecha inventado.
+
+    Se enviaba "FechaDesde", un nombre supuesto. Comprobado contra la API real
+    (2026-09-09): no existe. Y Smartier confirmo que un filtro no reconocido se
+    DESCARTA en silencio -responde 200 con el listado completo-, asi que el
+    error no se veia: la pasada se traia el historico entero creyendo acotar.
+    """
+
+    def test_sin_configurar_no_se_envia_filtro_de_fecha(self, monkeypatch):
+        import importlib
+        import core.ingesta_smartier as ing
+        monkeypatch.delenv("SMARTIER_FILTRO_FECHA", raising=False)
+        importlib.reload(ing)
+        assert ing.FILTRO_FECHA == ""
+
+    def test_el_nombre_se_configura_por_entorno(self, monkeypatch):
+        # Cuando Smartier confirme el nombre real, se activa sin tocar codigo.
+        import importlib
+        import core.ingesta_smartier as ing
+        monkeypatch.setenv("SMARTIER_FILTRO_FECHA", "CreadoUtcDesde")
+        importlib.reload(ing)
+        assert ing.FILTRO_FECHA == "CreadoUtcDesde"
+        monkeypatch.delenv("SMARTIER_FILTRO_FECHA")
+        importlib.reload(ing)
+
+    def test_no_queda_FechaDesde_escrito_en_el_codigo(self):
+        # Fija el hallazgo: ese nombre concreto se probo y no existe.
+        import inspect
+        import core.ingesta_smartier as ing
+        codigo = inspect.getsource(ing)
+        cuerpo = codigo.split("FILTRO_FECHA = os.getenv")[1]
+        assert '"FechaDesde"' not in cuerpo

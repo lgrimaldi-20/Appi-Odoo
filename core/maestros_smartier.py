@@ -106,11 +106,47 @@ def _tiene_localizacion_ve(odoo: OdooUniversalAPI) -> bool:
     return _LOCALIZACION_VE
 
 
+# Codigos de Documento.Tipo de Smartier (catalogo facilitado por ellos el
+# 2026-09-09; no se expone por API). En este tenant solo hay cuatro habilitados:
+#
+#     6  Documento de identidad (generico)  -> contactos, formato LIBRE
+#     7  Registro tributario   (generico)   -> empresas,  formato LIBRE
+#    29  CI Venezolana                      -> contactos, V-12345678
+#    30  RIF Venezolano                     -> empresas,  J-12345678-9
+#
+# Solo 29 y 30 son identificacion fiscal con formato validado en origen. Los
+# genericos aceptan letras, digitos y espacios: lo que traigan NO es un RIF.
+DOC_CI_VE = 29
+DOC_RIF_VE = 30
+DOCS_FISCALES = (DOC_CI_VE, DOC_RIF_VE)
+
+
 def rif_de(cliente: dict) -> Optional[str]:
-    """Identificacion fiscal del cliente de Smartier, o None si viene vacia."""
-    contenido = (cliente.get("Documento") or {}).get("Contenido")
+    """
+    Identificacion fiscal del cliente, solo si su tipo de documento la avala.
+
+    Antes se devolvia Documento.Contenido sin mirar el Tipo, y eso mandaba a
+    Odoo como 'vat' cualquier cosa escrita en un documento generico (tipo 6),
+    cuyo formato Smartier no valida. El dato acabaria en el campo fiscal de la
+    factura sin ser un RIF.
+
+    Un contenido bajo tipo generico se trata como AUSENTE: el contacto se crea
+    igual pero queda PENDIENTE de validacion fiscal, que es la situacion real.
+    """
+    doc = cliente.get("Documento") or {}
+    contenido = doc.get("Contenido")
     texto = str(contenido).strip() if contenido is not None else ""
-    return texto or None
+    if not texto:
+        return None
+
+    tipo = doc.get("Tipo")
+    try:
+        tipo = int(tipo)
+    except (TypeError, ValueError):
+        # Sin tipo legible no se puede afirmar que sea identificacion fiscal.
+        return None
+
+    return texto if tipo in DOCS_FISCALES else None
 
 
 def esta_activo(cliente: dict) -> bool:

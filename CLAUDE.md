@@ -91,6 +91,23 @@ La lógica de clientes vive en **`core/maestros_smartier.py`**, no en el script:
 
 `CAMPOS_ACTUALIZABLES` deja fuera **`comment`** a propósito: es texto libre donde contabilidad escribe sus notas, y una pasada de sincronización no debe apropiárselo — solo se rellena al crear, como pista inicial. Los campos de retención tampoco se actualizan nunca (neutros al crear, intocables después). Un fallo de datos de un cliente se anota y la pasada sigue; un fallo de red aborta y Celery reintenta.
 
+### Documento fiscal: solo tipos 29 y 30 (respuesta de Smartier, 2026-09-09)
+`Documento.Tipo` **no se puede ignorar**. El catálogo (que Smartier no expone por API) declara el **6** como *"Documento de identidad" genérico*, con validación permisiva — acepta letras, dígitos y espacios. **Su contenido no es un RIF.** Antes se enviaba `Documento.Contenido` a Odoo como `vat` sin mirar el tipo, así que cualquier cosa escrita en un documento genérico acababa en el campo fiscal de la factura. `rif_de()` acepta ahora solo **29** (CI Venezolana) y **30** (RIF Venezolano); un genérico con contenido se trata como ausente y el contacto queda `PENDIENTE`, que es la situación real. `ingesta_smartier._extraer_nif` delega en esa misma función: con dos criterios distintos, la factura buscaría un partner por un `vat` que el sincronizador de clientes nunca escribió.
+
+**El RIF exige cliente de tipo Empresa.** Contacto y Empresa son dos caminos de alta distintos en Smartier, y el tipo restringe qué documentos admite. Los clientes de prueba están como `Contacto`, así que al operador **no le aparece la opción de RIF**. Corregirlo no es editar un campo: es dar de alta al cliente otra vez por el otro camino — con **`Id` nuevo**, y por tanto `SMARTIER-<id>` nuevo, así que nuestra deduplicación crearía un contacto nuevo en Odoo en vez de reutilizar el existente.
+
+### El filtro de fecha de la ingesta no existe
+`FILTRO_FECHA` está **vacío a propósito**. Se enviaba `FechaDesde`, un nombre supuesto; comprobado contra la API real: **no existe**. Smartier confirmó que un filtro no reconocido **se descarta en silencio** (200 con el listado completo), así que no daba error pero tampoco acotaba: cada pasada leía el histórico entero. Verificado con su propia prueba — comparar el `Count` con filtro contra el `Count` sin filtro:
+
+| consulta | Count | |
+|---|---|---|
+| sin filtro | 4 | |
+| `FechaDesde=2099-01-01` | 4 | no filtra |
+| `FiltroInventado=xyz` | 4 | control: no filtra |
+| `NombreContains=ZZZ` | 0 | control: **sí** filtra |
+
+La marca de agua se sigue guardando y el antiduplicado evita reprocesar, pero **el coste de la lectura crece con el histórico**. Se activa poniendo el nombre real en `SMARTIER_FILTRO_FECHA`, sin tocar código. `Sort` inválido sí devuelve 400 con la lista de campos válidos — eso es deliberado por su parte.
+
 ### Sincronización de datos maestros (`scripts/sincronizar_*_smartier.py`)
 Clientes y productos se cargan en Odoo con dos scripts que, como el resto del flujo, **registran en el `sync_map`**: por eso aparecen en el panel (entidades `cliente` y `producto`) en lugar de ser escrituras invisibles que solo dejan rastro dentro de Odoo. Ambos simulan por defecto y exigen `--aplicar` para escribir.
 - **Deduplicación:** por RIF cuando existe (`res.partner.vat`), y si no —el caso hoy— por el `Id` de Smartier guardado como `SMARTIER-<id>` en `res.partner.ref` / `product.product.default_code`. **Nunca por nombre**, que varía en formato y mayúsculas. Un contacto que ya exista (p. ej. como proveedor) se reutiliza añadiéndole el rol de cliente.
