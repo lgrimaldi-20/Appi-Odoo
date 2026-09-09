@@ -180,3 +180,4 @@ pytest tests/ -v
 - [docs/etl-sync.md](docs/etl-sync.md) - Sincronizacion ETL a PostgreSQL/MySQL
 - [docs/paso-a-produccion.md](docs/paso-a-produccion.md) - **Flujo automatico y checklist de produccion**
 - [docs/infraestructura-produccion.md](docs/infraestructura-produccion.md) - **Donde se despliega** (EC2 + RDS, cambios del docker-compose)
+- [docs/respuesta-smartier-2026-09.md](docs/respuesta-smartier-2026-09.md) - **Respuesta de Smartier al informe**: que corregir en codigo, informe y que responderles
