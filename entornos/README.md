@@ -43,3 +43,20 @@ el script y este README sí. Al clonar el repo hay que traerlos aparte.
 Reinicia `uvicorn`: `DATABASE_URL` y `SOURCE_DATABASE_URL` se leen **al
 arrancar**. Si no, el panel sigue mostrando la base anterior mientras los
 scripts escriben en la nueva.
+
+## `archivo/`
+
+`.env` de instancias que ya no se usan (Credix QA5, pruebas viejas de Turicopy,
+`smartautomatai-19v2`). No se borraron porque apuntan a instancias distintas y
+recuperar credenciales cuesta más que el disco que ocupan. Tampoco se suben.
+
+Los `.bak` que eran copia exacta de los dos entornos vigentes sí se eliminaron.
+
+## Por qué el script está commiteado en las dos ramas
+
+`entornos/` es contenido versionado: al pasar a la otra rama, git se lleva la
+carpeta y **el script desaparece justo cuando lo necesitas para volver**. Los
+`.env` sobreviven porque están ignorados; el script no.
+
+Por eso el commit está en `Turicopy-V17` y en `Fibex-V19`. Si lo cambias, hay
+que llevar el cambio a las dos, y una rama nueva necesita el cherry-pick.
