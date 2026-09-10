@@ -1,7 +1,22 @@
 # Mapeo de campos: Smartier/Turicopy → Middleware → Odoo v17
 
-**Versión 2** — revisada contra la instancia real y contra el código de la localización.
-Fecha: 2026-09-02 · Instancia: `lgrimaldi-20-turicopy-pruebas` (Odoo 17.0)
+**Versión 2.2** — revisada contra la instancia real, contra el código de la
+localización y contra las respuestas de Smartier.
+Fecha: 2026-09-10 · Instancia: `smartautomatai-pruebaturycopi` (Odoo 17.0)
+
+> **Qué cambia en la v2.2 [2026-09-10].** Incorpora la respuesta de Smartier a
+> las seis consultas de este informe. Dos de sus aclaraciones destaparon fallos
+> **en nuestro código**, ya corregidos:
+>
+> | | Antes | Ahora |
+> |---|---|---|
+> | `Documento.Tipo` | se ignoraba; se proponía mapearlo a `nationality` | **decide si el contenido es identificación fiscal**: solo tipos 29 y 30 (§2.1.1) |
+> | Filtro de fecha | se enviaba `FechaDesde`, un nombre supuesto | **no existe**; se descartaba en silencio y leíamos el histórico entero (§15) |
+>
+> Además: los clientes son **4**, no 3; el catálogo de `Documento.Tipo` deja de
+> ser una pregunta abierta; y se documenta que **el RIF exige cliente de tipo
+> Empresa** (§2.1.2), con la consecuencia que eso tiene para la deduplicación.
+> Análisis completo en [respuesta-smartier-2026-09.md](respuesta-smartier-2026-09.md).
 
 > **Qué cambia respecto a la v1.** La v1 proponía campos `x_smartier_*` creados con
 > Studio y asumía que la localización venezolana estaba disponible. Ambas cosas se
@@ -20,7 +35,7 @@ Todo lo de esta sección está comprobado contra los sistemas reales, no inferid
 
 | Recurso | Registros | Nota |
 |---|---:|---|
-| `/external/clientes` | 3 | los **3 sin RIF** (`Documento.Contenido: null`) |
+| `/external/clientes` | 4 | los **4 sin RIF** (`Documento.Contenido: null`) |
 | `/external/productos` | 55 | todos IVA 16 %, ninguno exento, todos `Disponible` |
 | `/external/vendedores` | 3 | |
 | `/external/recursos` | 82 | |
@@ -84,10 +99,54 @@ alcance antes de estimar (§14, pregunta 3).
 | `Nombre` / `RazonSocial` | `name` | ✅ | `RazonSocial` si existe, si no `Nombre` |
 | `Tipo` (`Contacto`/`Empresa`) | `company_type` (`person`/`company`) | ✅ | El `Tipo` manda; antes se deducía de `RazonSocial`, lo que marcaba como empresa a un contacto con razón social |
 | `Estado` (`Habilitado`/`Deshabilitado`) | `active` | ✅ | Solo `Deshabilitado` archiva; un estado desconocido deja el registro **visible** (un archivado por error desaparece de las búsquedas sin que nadie lo note) |
-| `Documento.Contenido` | `vat` **y** `rif` | ⏳ hoy `null` en los 3 | `rif` solo con localización |
-| `Documento.Tipo` (int) | `nationality` (V/E/P) | ❓ | Falta el catálogo de códigos; hoy todos traen `6` |
+| `Documento.Contenido` | `vat` **y** `rif` | ⏳ hoy `null` en los 4 | **Solo si `Documento.Tipo ∈ {29, 30}`** — ver fila siguiente. `rif` solo con localización |
+| `Documento.Tipo` (int) | **no se copia a ningún campo** | ✅ implementado | **Decide si el contenido es identificación fiscal.** No es la nacionalidad: es la *clase* de documento. Ver §2.1.1 |
 | `Email` | `email` | ✅ | |
 | `CreadoUtc` | — | ❌ descartado | No aporta: `create_date` de Odoo ya fecha el alta, y la trazabilidad de origen vive en `sync_map` |
+
+#### 2.1.1 `Documento.Tipo`: el catálogo y por qué importa
+
+> **Corregido tras la respuesta de Smartier (2026-09-09).** La v1 de este informe
+> daba el catálogo por desconocido y proponía mapear el tipo a `nationality`.
+> Ambas cosas eran incorrectas.
+
+El catálogo no se expone por API; Smartier lo facilitó por escrito. En **nuestro
+tenant** solo hay cuatro tipos habilitados:
+
+| Código | Nombre | Aplica a | Formato |
+|---:|---|---|---|
+| 6 | Documento de identidad *(genérico)* | Contactos | **libre** — letras, dígitos y espacios |
+| 7 | Registro tributario *(genérico)* | Empresas | **libre** |
+| 29 | CI Venezolana | Contactos | `V-12345678` |
+| 30 | **RIF Venezolano** | Empresas | `J-12345678-9` |
+
+**El tipo 6 no es un RIF.** Es el genérico de contactos y su formato no se valida
+en origen. Hoy **los 4 clientes llegan con tipo 6 y contenido vacío**.
+
+Esto era un fallo real de nuestro lado: `rif_de()` leía `Documento.Contenido`
+**sin mirar el `Tipo`**, así que cualquier cosa escrita en un documento genérico
+habría acabado en el `vat` del contacto y, de ahí, en el campo fiscal de la
+factura. Corregido: solo cuentan el **29** y el **30**; un genérico con contenido
+se trata como ausente y el contacto queda `PENDIENTE`.
+
+#### 2.1.2 El RIF exige que el cliente sea de tipo **Empresa**
+
+Contacto y Empresa son **dos caminos de alta distintos** en Smartier, con
+formularios propios, y el tipo restringe qué documentos admite. Como el RIF solo
+aplica a empresas, **una empresa dada de alta como "Contacto" no puede llevar
+RIF**: al operador solo le quedan los tipos de contacto, típicamente el 6.
+
+Nuestros 4 clientes están como `Contacto`. No es un descuido de captura: ese
+camino de alta no ofrece la opción.
+
+> **Consecuencia para la integración.** Corregirlo no es editar un campo, es dar
+> de alta al cliente **otra vez** por el otro camino → `Id` nuevo en Smartier →
+> `SMARTIER-<id>` nuevo → nuestra deduplicación crearía un **contacto nuevo** en
+> Odoo en vez de reutilizar el existente, partiendo el histórico en dos fichas.
+>
+> Hay que decidirlo **antes** de que empiecen a recrear clientes: o se acepta la
+> ficha nueva y se archiva la vieja, o se cargan los RIF directamente en Odoo y
+> se deja Smartier como está.
 
 ### 2.2 Campos fiscales de la localización — **NO vienen de Smartier**
 
@@ -205,13 +264,6 @@ Sin cambios respecto a la v1, salvo §11 (no hacen falta campos `x_smartier_*`
 para la clave externa; se usa `client_order_ref` o `origin`).
 
 **Bloqueado:** `/external/ordenes` devuelve **0 registros**.
-
-## 5b / 6 / 8 / 9. Producción → módulo MRP
-
-**No programable hoy:** `mrp` está sin instalar y sus modelos no existen. El
-mapeo de la v1 sigue siendo válido como diseño, pero requiere decisión previa
-(§14, pregunta 1). Además `/external/ordenes` y `/external/tickets` están vacíos,
-así que tampoco hay datos para validarlo.
 
 ---
 
@@ -387,54 +439,60 @@ entre, hay que revisar que sus impuestos no dupliquen los creados aquí.
 
 ## 14. Preguntas abiertas
 
-### Bloqueantes
-
-1. **¿Se instala Fabricación (MRP)?** Verificado: `mrp` está sin instalar y sus
-   modelos no existen. Sin esa decisión, §5b, §6, §8 y §9 no son programables.
-2. **¿Por qué falla el build de `l10n_ve_full`?** Hace falta el log de Odoo.sh
-   —vía soporte, que tiene partnership code, o vía el equipo de `sma_l10n_ve`—.
-   Define si se sigue con la solución nativa o se completa el cumplimiento fiscal.
-3. **¿El alcance es facturación o el ERP completo?** Cambia la estimación por
-   entero. Hoy hay implementado un flujo; este documento mapea seis.
-
 ### Fiscales (decisión de negocio)
 
-4. **¿Cuáles de los 3 clientes son agentes de retención de IVA, y a qué
+4. **¿Cuáles de los 4 clientes son agentes de retención de IVA, y a qué
    porcentaje (75 % o 100 %)?** Es designación del SENIAT, cliente por cliente.
    Smartier no lo sabe.
-5. **¿Son personas naturales o jurídicas?** Smartier dice `Contacto` en los 3,
+5. **¿Son personas naturales o jurídicas?** Smartier dice `Contacto` en los 4,
    pero los nombres sugieren empresas (`VENTASIMPRENTA@TURICOPYIMPRESOS.NET`).
-   Cambia la alícuota de ISLR y el `people_type_*`.
+   Cambia la alícuota de ISLR y el `people_type_*`. **Smartier confirmó que es
+   una elección manual del operador entre dos caminos de alta distintos**, y que
+   el tipo condiciona qué documentos admite: una empresa dada de alta como
+   `Contacto` no puede llevar RIF (§2.1.2). La pregunta sigue abierta, pero ya
+   sabemos que la respuesta no está en el dato, sino en cómo se capturó.
 6. **¿Qué concepto ISLR aplica a impresión/artes gráficas?** Determina el
    porcentaje y el sustraendo.
 7. **¿Dónde vive el dato de "es agente de retención"?** Recomendación: **en Odoo,
-   a mano**, por contabilidad. Son 3 clientes y el dato cambia poco. El middleware
+   a mano**, por contabilidad. Son 4 clientes y el dato cambia poco. **Smartier
+   confirmó que no admite campos personalizados por tenant** y que las
+   categorías CRM ni se exponen en `/external`, así que esta recomendación
+   deja de ser una preferencia: es la única vía. El middleware
    no lo toca (§2.3).
 
 ### De datos (dependen de Turicopy)
 
-8. **Los RIF.** Los 3 clientes tienen `Documento.Contenido: null`. Sin RIF no hay
-   factura fiscal válida. ¿Se cargan en Smartier (preferible) o en Odoo?
-9. **Notas de entrega y órdenes.** Los tres endpoints de producción devuelven 0.
-   Sin al menos una nota no se puede probar el flujo de punta a punta.
-10. **Catálogo de códigos numéricos:** `Documento.Tipo` (hoy `6` en los 3),
-    `Unidad` de ticket, `Tipo` de recurso. ¿Hay endpoint o tabla de referencia?
+8. **Los RIF.** Los 4 clientes tienen `Documento.Contenido: null`. Sin RIF no hay
+   factura fiscal válida. Smartier confirmó que **no puede volverse obligatorio
+   en el alta** por configuración; sí existe un control que lo exige al generar
+   la orden, activo por defecto — pendiente que verifiquen su estado en nuestra
+   instancia. Decidir además: ¿se cargan en Smartier (preferible) o en Odoo?
+   Ojo con §2.1.2: en Smartier obliga a recrear al cliente como *Empresa*.
+9. **Notas de entrega y órdenes.** Los endpoints devuelven 0. Antes de concluir
+   que el tenant está vacío hay que **descartar la exclusión** que Smartier
+   aplica siempre en `/external/notas-entrega`: se ocultan las notas cuya orden
+   esté en `EnEspera`, `Anulado` o sin estado. `/external/ordenes` no excluye
+   nada, así que su 0 sí es literal.
+10. ~~**Catálogo de códigos numéricos.**~~ **Resuelto** para `Documento.Tipo`
+    (§2.1.1): 4 tipos habilitados en nuestro tenant, el 30 es el RIF. Siguen sin
+    catálogo `Unidad` de ticket y `Tipo` de recurso.
+11. **Nombre del filtro de fecha.** `FechaDesde` **no existe** — comprobado
+    contra la API: devuelve el mismo `Count` que sin filtro, igual que un nombre
+    inventado, mientras `NombreContains` sí filtra. Smartier confirmó que un
+    filtro no reconocido se descarta en silencio (200 con el listado completo).
+    Se probaron 13 alternativas sin acierto. Mientras no lo confirmen, la
+    ingesta lee **sin acotar**: la marca de agua se guarda y el antiduplicado
+    protege, pero el coste de cada pasada crece con el histórico. Se activa por
+    `SMARTIER_FILTRO_FECHA` sin tocar código.
 
 ### De diseño (v1, siguen abiertas)
 
-11. Mapeo estado-a-estado (§7).
-12. ¿"Planta" en notas de entrega es un almacén físico (`stock.warehouse`)?
-13. ¿Un Componente pertenece siempre a una única Orden?
-14. `Accion.Tipo = Tarea/Servicio/Custom` sin `Accion.Id`: ¿`mrp.workorder` o
+12. Mapeo estado-a-estado (§7).
+13. ¿"Planta" en notas de entrega es un almacén físico (`stock.warehouse`)?
+14. ¿Un Componente pertenece siempre a una única Orden?
+15. `Accion.Tipo = Tarea/Servicio/Custom` sin `Accion.Id`: ¿`mrp.workorder` o
     `project.task`?
 
-### Cerradas desde la v1
-
-- ~~¿Vendedores en `res.users` o `res.partner`?~~ → `res.partner`, por licencias (§3).
-- ~~¿Hacen falta campos `x_smartier_id`?~~ → No: `sync_map` + `ref`/`default_code` (§11).
-- ~~Unidades de tiempo y plazo~~ → minutos y días, confirmado en la doc de modelos.
-
----
 
 ## 15. Riesgo operativo detectado
 
@@ -448,6 +506,28 @@ Si el control de duplicados dependiera de un filtro del lado de Smartier
 Por eso la idempotencia vive en el `sync_map` del middleware y no en la consulta:
 aunque la API devuelva de más, `sincronizar_entidad` consulta el estado antes de
 tocar Odoo y no duplica.
+
+> **Confirmado, y ya nos pasó [2026-09-09].** Smartier ratificó el
+> comportamiento (no es una decisión de diseño: es el descarte por defecto de la
+> plataforma web sobre la que corre la API). Y al comprobarlo encontramos que
+> **nuestra propia ingesta caía en ello**: enviaba `FechaDesde`, un nombre
+> supuesto que no existe, así que leía el histórico entero creyendo acotar.
+>
+> Verificado con la prueba que ellos sugieren — comparar el `Count` con filtro
+> contra el `Count` sin filtro:
+>
+> | consulta sobre `/external/clientes` | `Count` | |
+> |---|---:|---|
+> | sin filtro | 4 | |
+> | `FechaDesde=2099-01-01` | 4 | **no filtra** |
+> | `FiltroInventado=xyz` | 4 | control: no filtra |
+> | `NombreContains=ZZZ` | 0 | control: **sí** filtra |
+> | `Sort=CampoInventado` | HTTP 400 | control: rechaza |
+>
+> El `sync_map` hizo su trabajo — no se duplicó nada —, pero el coste de la
+> lectura sí crecía. **Resguardo adoptado:** no se envía ningún filtro cuyo
+> nombre no esté confirmado, y los nombres se toman del OpenAPI, nunca de
+> memoria (punto 11 de §14).
 
 ---
 
@@ -527,7 +607,7 @@ documento. Con la volatilidad del bolívar, la diferencia no es menor.
 
 **Acción pendiente:** cuando `account_dual_currency` esté instalado, añadir
 `tax_today` al mapeo de `factura` en `mappings.yaml`, alimentado desde la fecha
-de la nota de entrega. Hoy no se puede: el campo no existe sin ese módulo.
+de la nota de entrega.
 
 ### 16.5 Campos por bloque — complemento al §12
 
@@ -578,23 +658,8 @@ Consolidado de ambos documentos. **Negrita** = aporta el documento externo.
 | **`concept_id`** | REC | `account.wh.islr.concept`, solo si hay retención ISLR |
 | **`tax_ids`** | IMP | Sin esto no hay IVA y los libros salen incompletos |
 
-### 16.6 Lo que ese documento asume y aquí no aplica
 
-Está escrito para **importación por CSV desde la interfaz de Odoo**; nuestro flujo
-es **JSON-RPC continuo**. Dos consecuencias:
-
-1. **"El ID externo es la red de seguridad"** — propone `smartier.cliente_1234` en
-   la columna de ID externo (`ir.model.data`). Es el equivalente, para importación
-   CSV, de lo que nosotros resolvemos con `sync_map` (§11). **No hacen falta las
-   dos cosas**; nuestra vía además sobrevive a que alguien edite el campo en Odoo.
-
-2. **"Importar en borrador y publicar después"** — sensato para una carga masiva
-   que hay que cuadrar contra el sistema anterior. En el flujo diario,
-   `crear_factura` crea y postea en la misma operación, con validación de totales
-   (`core/impuestos.py`) y rollback lógico si el posteo falla. Son estrategias
-   distintas para problemas distintos; ninguna sustituye a la otra.
-
-### 16.7 Orden de carga (si se hace migración histórica)
+### 16.6 Orden de carga (si se hace migración histórica)
 
 Del documento externo, y es correcto. Solo tiene sentido si además del flujo
 diario se decide migrar el histórico contable:
