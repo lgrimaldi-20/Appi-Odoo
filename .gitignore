@@ -11,6 +11,11 @@ __pycache__/
 .env.*
 !.env.example
 
+# Los .env por rama llevan credenciales; el script que los cambia, no.
+entornos/*.env
+!entornos/cambiar.ps1
+!entornos/README.md
+
 # Base de datos de control local (SQLite)
 *.db
 control.db
